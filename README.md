@@ -24,6 +24,8 @@ Three ways to use LLMs with **Claude Code** or **OpenAI Codex CLI**:
 
 ## Install
 
+> **Platform**: macOS with Apple Silicon (M1–M4). The local llama.cpp option uses Metal GPU. OpenRouter options work on any platform.
+
 ```bash
 # Clone the repo
 git clone https://github.com/sriinnu/claude-local.git
@@ -37,7 +39,20 @@ echo 'source ~/.claude_config.zsh' >> ~/.zshrc
 source ~/.claude_config.zsh
 ```
 
-> Edit `~/.claude_config.zsh` to add your API keys and customize settings.
+### API keys (required for cloud options)
+
+Create `~/.env.claude` with your keys:
+
+```bash
+# OpenRouter (free signup at https://openrouter.ai — needed for orf/openrouter)
+export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
+
+# Optional: other providers
+export ZAI_API_KEY="your-zai-key"
+export MINIMAX_API_KEY="your-minimax-key"
+```
+
+> **Just want free cloud models?** Set up the OpenRouter key above and skip straight to [Option 2](#option-2-openrouter-free-models) — no build or downloads needed.
 
 ## Quick Start
 
@@ -68,6 +83,8 @@ openrouter                                  # Claude, GPT, etc.
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Homebrew, cmake (`brew install cmake`), Git
+- `~/.local/bin` in your PATH (add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` if not)
+- Python 3 + `huggingface-hub` for downloading models: `pip install huggingface-hub`
 
 ### Build from source
 
@@ -100,7 +117,10 @@ Models are GGUF files from HuggingFace. Best sources:
 **Download methods:**
 
 ```bash
-# Method 1: lcp helper
+# Create models directory first
+mkdir -p models
+
+# Method 1: lcp helper (requires huggingface-hub)
 lcp --pull unsloth/Qwen3-30B-A3B-GGUF Qwen3-30B-A3B-Q4_K_M.gguf
 
 # Method 2: huggingface-cli
