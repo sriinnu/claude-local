@@ -1,0 +1,19 @@
+# Models (too large for git)
+models/*.gguf
+models/.cache/
+
+# llama.cpp source (users clone their own)
+llama.cpp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log

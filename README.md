@@ -1,0 +1,382 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="claude-local" width="100%" />
+</p>
+
+<p align="center">
+  <strong>Run any LLM with Claude Code & Codex CLI — local or cloud, free or paid.</strong>
+</p>
+
+<p align="center">
+  <a href="#option-1-local-with-llamacpp">Local</a> &bull;
+  <a href="#option-2-openrouter-free-models">Free Cloud</a> &bull;
+  <a href="#option-3-openrouter-paid-models">Paid Cloud</a> &bull;
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+---
+
+Three ways to use LLMs with **Claude Code** or **OpenAI Codex CLI**:
+1. **Local** — llama.cpp with Metal GPU (free, private, offline)
+2. **OpenRouter Free** — 25+ cloud models at $0 cost
+3. **OpenRouter Paid** — Claude, GPT, Gemini, etc.
+
+---
+
+## Install
+
+```bash
+# Clone the repo
+git clone https://github.com/sriinnu/claude-local.git
+cd claude-local
+
+# Copy the shell config
+cp claude_config.zsh ~/.claude_config.zsh
+
+# Add to your ~/.zshrc so it loads every shell
+echo 'source ~/.claude_config.zsh' >> ~/.zshrc
+source ~/.claude_config.zsh
+```
+
+> Edit `~/.claude_config.zsh` to add your API keys and customize settings.
+
+## Quick Start
+
+```bash
+source ~/.claude_config.zsh
+```
+
+Then pick your mode:
+
+```bash
+# Local (llama.cpp) — free, private, offline
+lcp                                         # interactive model picker
+lcp qwen3-4b                                # fuzzy match a downloaded model
+
+# OpenRouter free models — $0, cloud-hosted
+orf                                         # interactive picker (25+ models)
+orf qwen/qwen3-coder:free                   # use a specific free model
+
+# OpenRouter paid — use any premium model
+openrouter                                  # Claude, GPT, etc.
+```
+
+---
+
+## Option 1: Local with llama.cpp
+
+### Prerequisites
+
+- macOS with Apple Silicon (M1/M2/M3/M4)
+- Homebrew, cmake (`brew install cmake`), Git
+
+### Build from source
+
+```bash
+cd ~/claude-local
+git clone https://github.com/ggml-org/llama.cpp.git
+cd llama.cpp
+
+# Build with Metal GPU support
+cmake -B build -DGGML_METAL=ON -DLLAMA_CURL=ON
+cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+# Make the binaries accessible
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/build/bin/llama-server" ~/.local/bin/llama-server
+ln -sf "$(pwd)/build/bin/llama-cli" ~/.local/bin/llama-cli
+
+# Verify
+llama-server --version
+```
+
+### Download GGUF models
+
+Models are GGUF files from HuggingFace. Best sources:
+
+- **[unsloth](https://huggingface.co/unsloth)** — High-quality GGUFs for most popular models
+- **[bartowski](https://huggingface.co/bartowski)** — Wide variety, fast uploads of new models
+- **[lmstudio-community](https://huggingface.co/lmstudio-community)** — Reliable GGUFs
+
+**Download methods:**
+
+```bash
+# Method 1: lcp helper
+lcp --pull unsloth/Qwen3-30B-A3B-GGUF Qwen3-30B-A3B-Q4_K_M.gguf
+
+# Method 2: huggingface-cli
+pip install huggingface-hub
+huggingface-cli download unsloth/Qwen3-30B-A3B-GGUF Qwen3-30B-A3B-Q4_K_M.gguf \
+  --local-dir ./models
+
+# Method 3: curl
+curl -L -o models/Qwen3-4B-Q4_K_M.gguf \
+  "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
+```
+
+### RAM guide
+
+| Your RAM | Max model size | Recommended |
+|----------|---------------|-------------|
+| 8GB      | ~4GB          | Qwen3-4B Q4_K_M |
+| 16GB     | ~10GB         | Qwen3-8B Q4_K_M |
+| 32GB     | ~22GB         | Qwen3-30B-A3B Q4_K_M, Qwen3-14B Q8_0 |
+| 36GB     | ~26GB         | Qwen3-30B-A3B Q6_K |
+| 64GB     | ~48GB         | Qwen3-32B Q8_0 |
+| 96GB+    | ~70GB+        | Qwen3-235B-A22B Q4_K_M, Llama-3.3-70B Q8_0 |
+
+> **Rule of thumb**: Model file size should be ≤70% of your total RAM.
+
+### Quantization quality (best to smallest)
+
+| Quant    | Quality       | Size vs original | When to use |
+|----------|---------------|-----------------|-------------|
+| Q8_0     | Near-lossless | ~50%            | When it fits in RAM |
+| Q6_K     | Excellent     | ~42%            | Best quality/size tradeoff |
+| Q5_K_M   | Very good     | ~37%            | Good balance |
+| Q4_K_M   | Good          | ~30%            | Most popular, recommended default |
+| Q3_K_M   | Decent        | ~25%            | When RAM is tight |
+| IQ4_XS   | Good          | ~28%            | Experimental, slightly better than Q3 |
+
+### Recommended local models for coding
+
+| Model | Size (Q4_K_M) | Strengths | HF Repo |
+|-------|--------------|-----------|---------|
+| Qwen3-30B-A3B | ~17GB | MoE — fast + smart, great all-rounder | unsloth/Qwen3-30B-A3B-GGUF |
+| Qwen3-4B | ~2.3GB | Tiny but capable, great for testing | unsloth/Qwen3-4B-GGUF |
+| Qwen3-8B | ~5GB | Solid coder, good for 16GB machines | unsloth/Qwen3-8B-GGUF |
+| Qwen3-14B | ~8.5GB | Strong reasoning + coding | unsloth/Qwen3-14B-GGUF |
+| Qwen3-32B | ~19GB | Powerful dense model | unsloth/Qwen3-32B-GGUF |
+| DeepSeek-R1-0528-Qwen3-8B | ~5GB | Reasoning-focused | unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF |
+
+### Start the server manually
+
+```bash
+llama-server \
+  --model models/Qwen3-4B-Q4_K_M.gguf \
+  --port 8776 \
+  --ctx-size 65536 \
+  --n-gpu-layers 99 \
+  --threads 6 \
+  --batch-size 2048 \
+  --ubatch-size 512 \
+  --flash-attn on
+```
+
+**Key flags:**
+
+| Flag | What it does | Suggested value |
+|------|-------------|-----------------|
+| `--port` | Server port | 8776 (or any free port) |
+| `--ctx-size` | Context window in tokens | 32768-65536 |
+| `--n-gpu-layers 99` | Offload all layers to Metal GPU | 99 (all) |
+| `--threads` | CPU threads (use perf cores only) | `sysctl -n hw.perflevel0.logicalcpu` |
+| `--batch-size` | Prompt processing batch size | 2048 |
+| `--ubatch-size` | Micro-batch for Metal | 512 |
+| `--flash-attn on` | Flash attention (faster + less VRAM) | Always use it |
+
+### Connect to Claude Code (local)
+
+llama.cpp natively serves the Anthropic Messages API at `/v1/messages` — no proxy needed.
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8776 \
+ANTHROPIC_AUTH_TOKEN=local \
+ANTHROPIC_API_KEY="" \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+claude
+```
+
+Or use the `lcp` shell function:
+
+```bash
+source ~/.claude_config.zsh
+
+lcp                    # interactive model picker
+lcp qwen3-4b           # fuzzy match model name
+lcp --list             # see downloaded models
+lcp --status           # check server
+lcp --stop             # kill server
+lcp --pull <repo> <file>  # download a model
+lcp --help             # all options
+```
+
+### Connect to OpenAI Codex CLI (local)
+
+llama.cpp also serves the OpenAI-compatible API at `/v1/chat/completions`.
+
+```bash
+npm install -g @openai/codex
+
+OPENAI_BASE_URL=http://localhost:8776/v1 \
+OPENAI_API_KEY=local \
+codex
+```
+
+Or add to your shell config:
+
+```bash
+codex-local() {
+  (
+    export OPENAI_BASE_URL="http://localhost:8776/v1"
+    export OPENAI_API_KEY="local"
+    codex "$@"
+  )
+}
+```
+
+---
+
+## Option 2: OpenRouter Free Models
+
+25+ models at **$0 cost**. Runs in the cloud — no GPU or downloads needed.
+
+### Setup
+
+1. Sign up at [openrouter.ai](https://openrouter.ai)
+2. Go to **Keys** -> **Create Key**
+3. Add to `~/.env.claude`:
+   ```bash
+   echo 'export OPENROUTER_API_KEY="sk-or-v1-your-key-here"' >> ~/.env.claude
+   ```
+
+### Usage
+
+```bash
+source ~/.claude_config.zsh
+
+orf                                         # interactive picker
+orf qwen/qwen3-coder:free                   # specific model
+orf nvidia/nemotron-3-super-120b-a12b:free   # specific model
+```
+
+### All free models (as of 2026-04-03)
+
+Run `orf-update` to refresh this list from the API.
+
+#### Best for coding
+
+| Model | ID | Context | Notes |
+|-------|----|---------|-------|
+| Qwen3 Coder 480B | `qwen/qwen3-coder:free` | 262k | MoE, purpose-built for code |
+| Qwen3.6 Plus | `qwen/qwen3.6-plus:free` | 1M | Huge context, very capable |
+| NVIDIA Nemotron 3 Super 120B | `nvidia/nemotron-3-super-120b-a12b:free` | 262k | MoE, fast |
+| Llama 3.3 70B | `meta-llama/llama-3.3-70b-instruct:free` | 65k | Solid all-rounder |
+| OpenAI GPT-OSS 120B | `openai/gpt-oss-120b:free` | 131k | OpenAI's open-source model |
+| Hermes 3 405B | `nousresearch/hermes-3-llama-3.1-405b:free` | 131k | Largest free model |
+
+#### Good general-purpose
+
+| Model | ID | Context | Notes |
+|-------|----|---------|-------|
+| Qwen3 Next 80B | `qwen/qwen3-next-80b-a3b-instruct:free` | 262k | MoE, fast |
+| NVIDIA Nemotron 3 Nano 30B | `nvidia/nemotron-3-nano-30b-a3b:free` | 256k | MoE, lightweight |
+| Arcee Trinity Large | `arcee-ai/trinity-large-preview:free` | 131k | Preview |
+| MiniMax M2.5 | `minimax/minimax-m2.5:free` | 196k | Large context |
+| Step 3.5 Flash | `stepfun/step-3.5-flash:free` | 256k | Fast |
+| OpenAI GPT-OSS 20B | `openai/gpt-oss-20b:free` | 131k | Smaller OSS model |
+| GLM 4.5 Air | `z-ai/glm-4.5-air:free` | 131k | Z.AI model |
+
+#### Smaller / lightweight
+
+| Model | ID | Context | Notes |
+|-------|----|---------|-------|
+| Gemma 3 27B | `google/gemma-3-27b-it:free` | 131k | Google, solid |
+| Gemma 3 12B | `google/gemma-3-12b-it:free` | 32k | Mid-size |
+| Gemma 3 4B | `google/gemma-3-4b-it:free` | 32k | Small |
+| Gemma 3n 4B | `google/gemma-3n-e4b-it:free` | 8k | Tiny context |
+| Gemma 3n 2B | `google/gemma-3n-e2b-it:free` | 8k | Smallest |
+| NVIDIA Nemotron Nano 12B VL | `nvidia/nemotron-nano-12b-v2-vl:free` | 128k | Vision + language |
+| NVIDIA Nemotron Nano 9B | `nvidia/nemotron-nano-9b-v2:free` | 128k | Lightweight |
+| Llama 3.2 3B | `meta-llama/llama-3.2-3b-instruct:free` | 131k | Tiny |
+| Arcee Trinity Mini | `arcee-ai/trinity-mini:free` | 131k | Small preview |
+| Venice Uncensored 24B | `cognitivecomputations/dolphin-mistral-24b-venice-edition:free` | 32k | No guardrails |
+| LiquidAI 1.2B Instruct | `liquid/lfm-2.5-1.2b-instruct:free` | 32k | Experimental |
+| LiquidAI 1.2B Thinking | `liquid/lfm-2.5-1.2b-thinking:free` | 32k | Reasoning |
+
+### Connect free models to Codex CLI
+
+OpenRouter also works with Codex CLI since it serves OpenAI-compatible format too:
+
+```bash
+codex-openrouter() {
+  (
+    export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+    export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+    codex "$@"
+  )
+}
+```
+
+### Caveats of free models
+
+- **Rate limited** — slower responses, may queue during peak times
+- **Lower priority** — paid requests get served first
+- **May go offline** — OpenRouter can remove free tiers at any time
+- **No SLA** — don't rely on them for production work
+
+---
+
+## Option 3: OpenRouter Paid Models
+
+Access premium models (Claude, GPT, Gemini, DeepSeek, etc.) via OpenRouter.
+
+```bash
+source ~/.claude_config.zsh
+openrouter                  # defaults to Claude models
+```
+
+Default model mapping:
+- Opus -> `anthropic/claude-opus-4`
+- Sonnet -> `anthropic/claude-sonnet-4`
+- Haiku -> `anthropic/claude-haiku-3.5`
+
+You can change these in `~/.claude_config.zsh`.
+
+---
+
+## Other provider configs
+
+These are also available in `~/.claude_config.zsh`:
+
+```bash
+zai                     # Z.AI GLM models (cost-effective)
+minimax                 # MiniMax M2.7 (experimental)
+```
+
+---
+
+## Update llama.cpp
+
+```bash
+cd ~/claude-local/llama.cpp
+git pull
+cmake -B build -DGGML_METAL=ON -DLLAMA_CURL=ON
+cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+```
+
+Symlinks in `~/.local/bin/` automatically pick up the new binaries.
+
+## Troubleshooting
+
+**Server won't start / out of memory**
+- Model too big. Use a smaller quant (Q4_K_M instead of Q8_0) or a smaller model.
+- Reduce `--ctx-size` (e.g., 32768 instead of 65536).
+
+**Slow generation**
+- Make sure `--n-gpu-layers 99` is set (offloads to Metal GPU).
+- Use `--flash-attn on` for faster attention.
+- Use only performance cores: `--threads $(sysctl -n hw.perflevel0.logicalcpu)`
+
+**Claude Code says "connection refused"**
+- Check the server is running: `curl http://localhost:8776/health`
+- Make sure port matches between server and `ANTHROPIC_BASE_URL`.
+
+**OpenRouter rate limited**
+- Free models have strict limits. Wait a minute and retry.
+- Consider using a paid model for heavy workloads.
+- Run `orf-update` to check if new free models are available.
+
+**Model gives bad output**
+- Try a larger model or higher quant.
+- Qwen3-4B is good for testing but not great for complex coding. Use Qwen3-30B-A3B or larger for real work.
+- On OpenRouter, `qwen/qwen3-coder:free` or `qwen/qwen3.6-plus:free` are the strongest free options.
