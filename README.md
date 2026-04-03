@@ -65,7 +65,7 @@ Then pick your mode:
 ```bash
 # Local (llama.cpp) — free, private, offline
 lcp                                         # interactive model picker
-lcp qwen3-4b                                # fuzzy match a downloaded model
+lcp gemma4                                  # fuzzy match a downloaded model
 
 # OpenRouter free models — $0, cloud-hosted
 orf                                         # interactive picker (25+ models)
@@ -139,9 +139,9 @@ curl -L -o models/Qwen3-4B-Q4_K_M.gguf \
 |----------|---------------|-------------|
 | 8GB      | ~4GB          | Qwen3-4B Q4_K_M |
 | 16GB     | ~10GB         | Qwen3-8B Q4_K_M |
-| 32GB     | ~22GB         | Qwen3-30B-A3B Q4_K_M, Qwen3-14B Q8_0 |
-| 36GB     | ~26GB         | Qwen3-30B-A3B Q6_K |
-| 64GB     | ~48GB         | Qwen3-32B Q8_0 |
+| 32GB     | ~22GB         | Qwen3-30B-A3B Q4_K_M, Gemma-4-26B-A4B UD-Q5_K_XL |
+| 36GB     | ~26GB         | Gemma-4-26B-A4B UD-Q6_K_XL, Qwen3-30B-A3B Q6_K |
+| 64GB     | ~48GB         | Gemma-4-31B Q8_0, Qwen3-32B Q8_0 |
 | 96GB+    | ~70GB+        | Qwen3-235B-A22B Q4_K_M, Llama-3.3-70B Q8_0 |
 
 > **Rule of thumb**: Model file size should be ≤70% of your total RAM.
@@ -161,25 +161,34 @@ curl -L -o models/Qwen3-4B-Q4_K_M.gguf \
 
 | Model | Size (Q4_K_M) | Strengths | HF Repo |
 |-------|--------------|-----------|---------|
+| Gemma-4-26B-A4B | ~15GB (UD-Q4_K_XL) | MoE — 4B active, fast + multimodal | unsloth/gemma-4-26B-A4B-it-GGUF |
+| Gemma-4-31B | ~19GB | Dense, strongest Gemma, multimodal | unsloth/gemma-4-31B-it-GGUF |
 | Qwen3-30B-A3B | ~17GB | MoE — fast + smart, great all-rounder | unsloth/Qwen3-30B-A3B-GGUF |
 | Qwen3-4B | ~2.3GB | Tiny but capable, great for testing | unsloth/Qwen3-4B-GGUF |
+| Gemma-4-E4B | ~3GB | Tiny, multimodal, edge model | unsloth/gemma-4-E4B-it-GGUF |
 | Qwen3-8B | ~5GB | Solid coder, good for 16GB machines | unsloth/Qwen3-8B-GGUF |
 | Qwen3-14B | ~8.5GB | Strong reasoning + coding | unsloth/Qwen3-14B-GGUF |
 | Qwen3-32B | ~19GB | Powerful dense model | unsloth/Qwen3-32B-GGUF |
 | DeepSeek-R1-0528-Qwen3-8B | ~5GB | Reasoning-focused | unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF |
 
+> **Note**: Gemma 4 models from unsloth use `UD-` (Unsloth Dynamic) quantization. Use `UD-Q4_K_XL` or `UD-Q6_K_XL` variants for best quality. The `XL` suffix includes full MoE expert weights.
+
 ### Start the server manually
 
 ```bash
 llama-server \
-  --model models/Qwen3-4B-Q4_K_M.gguf \
+  --model models/gemma4-26b-a4b-Q6.gguf \
   --port 8776 \
-  --ctx-size 65536 \
+  --ctx-size 32768 \
   --n-gpu-layers 99 \
   --threads 6 \
-  --batch-size 2048 \
-  --ubatch-size 512 \
-  --flash-attn on
+  --batch-size 4096 \
+  --ubatch-size 1024 \
+  --flash-attn on \
+  --cont-batching \
+  --mlock \
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0
 ```
 
 **Key flags:**
@@ -187,12 +196,34 @@ llama-server \
 | Flag | What it does | Suggested value |
 |------|-------------|-----------------|
 | `--port` | Server port | 8776 (or any free port) |
-| `--ctx-size` | Context window in tokens | 32768-65536 |
+| `--ctx-size` | Context window in tokens | 32768 (safe for 22GB model on 36GB) |
 | `--n-gpu-layers 99` | Offload all layers to Metal GPU | 99 (all) |
 | `--threads` | CPU threads (use perf cores only) | `sysctl -n hw.perflevel0.logicalcpu` |
-| `--batch-size` | Prompt processing batch size | 2048 |
-| `--ubatch-size` | Micro-batch for Metal | 512 |
+| `--batch-size` | Prompt processing batch size | 4096 (faster prompt ingestion) |
+| `--ubatch-size` | Micro-batch for Metal | 1024 (M3 handles this well) |
 | `--flash-attn on` | Flash attention (faster + less VRAM) | Always use it |
+| `--cont-batching` | Continuous batching | Better throughput |
+| `--mlock` | Lock model in RAM | Prevents macOS from swapping |
+| `--cache-type-k/v q8_0` | Quantized KV cache | ~50% less context memory |
+
+### Performance tuning
+
+The default `lcp` settings in `~/.claude_config.zsh` are tuned for **M3 Pro 36GB**.
+
+**Context size vs model size** — your context window eats RAM too. With quantized KV cache (`--cache-type-k/v q8_0`), you use ~50% less memory for context:
+
+| Model size | Safe ctx (no KV quant) | Safe ctx (q8_0 KV cache) |
+|-----------|----------------------|--------------------------|
+| ~5GB      | 65536                | 65536                    |
+| ~15GB     | 65536                | 65536                    |
+| ~22GB     | 32768                | 65536                    |
+| ~26GB     | 16384                | 32768                    |
+
+Override context at runtime: `lcp gemma4 --ctx 65536`
+
+**Batch size** — larger = faster prompt processing but more memory. 4096 is optimal for M3 Pro. Reduce to 2048 if you hit memory pressure.
+
+**mlock** — locks the model in RAM so macOS doesn't swap it to disk. Critical for consistent performance with large models.
 
 ### Connect to Claude Code (local)
 
@@ -212,7 +243,7 @@ Or use the `lcp` shell function:
 source ~/.claude_config.zsh
 
 lcp                    # interactive model picker
-lcp qwen3-4b           # fuzzy match model name
+lcp gemma4             # fuzzy match model name
 lcp --list             # see downloaded models
 lcp --status           # check server
 lcp --stop             # kill server
@@ -273,6 +304,14 @@ orf nvidia/nemotron-3-super-120b-a12b:free   # specific model
 
 Run `orf-update` to refresh this list from the API.
 
+#### Auto-router
+
+| Model | ID | Context | Notes |
+|-------|----|---------|-------|
+| Free Models Router | `openrouter/free` | 200k | Auto-picks best available free model |
+
+> **Tip**: Use `orf openrouter/free` when you don't care which model — it auto-routes to the best available free model.
+
 #### Best for coding
 
 | Model | ID | Context | Notes |
@@ -283,6 +322,8 @@ Run `orf-update` to refresh this list from the API.
 | Llama 3.3 70B | `meta-llama/llama-3.3-70b-instruct:free` | 65k | Solid all-rounder |
 | OpenAI GPT-OSS 120B | `openai/gpt-oss-120b:free` | 131k | OpenAI's open-source model |
 | Hermes 3 405B | `nousresearch/hermes-3-llama-3.1-405b:free` | 131k | Largest free model |
+
+> **Note**: Gemma 4 is **not free** on OpenRouter (paid only at `google/gemma-4-31b-it`). For Gemma 4, use the local llama.cpp option instead — see [Recommended local models](#recommended-local-models-for-coding).
 
 #### Good general-purpose
 
@@ -398,5 +439,6 @@ Symlinks in `~/.local/bin/` automatically pick up the new binaries.
 
 **Model gives bad output**
 - Try a larger model or higher quant.
-- Qwen3-4B is good for testing but not great for complex coding. Use Qwen3-30B-A3B or larger for real work.
+- Qwen3-4B is good for testing but not great for complex coding. Use Qwen3-30B-A3B, Gemma-4-26B-A4B, or larger for real work.
 - On OpenRouter, `qwen/qwen3-coder:free` or `qwen/qwen3.6-plus:free` are the strongest free options.
+- For Gemma 4, use unsloth's `UD-` (Unsloth Dynamic) quantized GGUFs. The `XL` variants include full MoE expert weights for better quality.
