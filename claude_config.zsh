@@ -6,7 +6,6 @@
 zai() {
   (
     export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
-   
     #export ANTHROPIC_BASE_URL="https://api.z.ai/api/coding/paas/v4"
     export ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY"
     export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5"
@@ -79,6 +78,7 @@ _OR_FREE_MODELS=(
   "nvidia/nemotron-nano-9b-v2:free            | Nemotron Nano 9B V2     | ctx:128k"
   "openai/gpt-oss-120b:free                   | GPT-OSS 120B            | ctx:131k"
   "openai/gpt-oss-20b:free                    | GPT-OSS 20B             | ctx:131k"
+  "openrouter/free                            | Free Models Router      | ctx:200k"
   "qwen/qwen3-coder:free                      | Qwen3 Coder 480B        | ctx:262k"
   "qwen/qwen3-next-80b-a3b-instruct:free      | Qwen3 Next 80B          | ctx:262k"
   "qwen/qwen3.6-plus:free                     | Qwen3.6 Plus            | ctx:1M"
@@ -164,18 +164,18 @@ print('Copy the output above to update _OR_FREE_MODELS in ~/.claude_config.zsh')
 #   lcp --status                 # check if server is running
 #   lcp --pull <hf-repo> <file>  # download a GGUF from HuggingFace
 
-_LCP_DIR="$HOME/claude-local"  # Change this to wherever you cloned the repo
+_LCP_DIR="$HOME/Sriinnu/Personal/llama-cpp-setup"  # Change this to wherever you cloned the repo
 _LCP_MODELS_DIR="$_LCP_DIR/models"
 _LCP_SERVER="$HOME/.local/bin/llama-server"
 _LCP_PORT=8776
 _LCP_PIDFILE="/tmp/llama-server.pid"
 
-# Default server settings (tuned for M3 Pro 36GB)
-_LCP_CTX_SIZE=65536        # context window
+# Default server settings (tuned for M3 Pro 36GB + 22GB model)
+_LCP_CTX_SIZE=32768        # 32k context — safe for 22GB model on 36GB RAM (use --ctx to override)
 _LCP_GPU_LAYERS=99         # offload all layers to Metal GPU
-_LCP_THREADS=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo 6)  # performance cores only
-_LCP_BATCH_SIZE=2048       # batch size for prompt processing
-_LCP_UBATCH_SIZE=512       # micro-batch for Metal
+_LCP_THREADS=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo 6)  # perf cores only (6 on M3 Pro)
+_LCP_BATCH_SIZE=4096       # larger batch = faster prompt ingestion
+_LCP_UBATCH_SIZE=1024      # bigger micro-batch for Metal (M3 handles this well)
 _LCP_FLASH_ATTN=1          # flash attention (faster, less memory)
 
 lcp() {
@@ -286,7 +286,7 @@ print(f'Downloaded to: {path}')
       # Case-insensitive retry
       local hint_lower="${model_hint:l}"
       for f in "${gguf_files[@]}"; do
-        if [[ "$(basename "$f":l)" == *"$hint_lower"* ]]; then
+        if [[ "${$(basename "$f"):l}" == *"$hint_lower"* ]]; then
           model_file="$f"
           break
         fi
@@ -344,6 +344,10 @@ print(f'Downloaded to: {path}')
     --batch-size "$_LCP_BATCH_SIZE" \
     --ubatch-size "$_LCP_UBATCH_SIZE" \
     $([ $_LCP_FLASH_ATTN -eq 1 ] && echo "--flash-attn on") \
+    --cont-batching \
+    --mlock \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
     --log-disable \
     &>/tmp/llama-server.log &
   echo $! > "$_LCP_PIDFILE"
