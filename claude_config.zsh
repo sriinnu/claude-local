@@ -108,25 +108,39 @@ _lcp_health_check() {
 }
 
 # Internal: unified launcher for any Claude Code provider
-# Usage: _launch_claude <base_url> <auth_token> <opus_model> <sonnet_model> <haiku_model> [--arg ...]
+# Usage: _launch_claude <base_url> <auth_token> <opus_model> <sonnet_model> <haiku_model> [provider_id] [--arg ...]
 # Passing the same model for all three roles is equivalent to single-model mode.
+# Use provider_id for logging/health checks when multiple logical providers share the same base URL
+# (for example: openrouter-free vs openrouter-paid).
 _launch_claude() {
   local base_url="$1" auth_token="$2"
   local opus_model="$3" sonnet_model="$4" haiku_model="$5"
   shift 5
 
+  # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
+  local provider=""
+  case "${1:-}" in
+    zai|minimax|openrouter-free|openrouter-paid|lcp-local|openrouter)
+      provider="$1"
+      shift
+      ;;
+  esac
+
   # Ensure run directory exists
   mkdir -p "$(dirname "$_LCP_SESSION_LOG")"
 
-  # Derive provider name from base_url for logging/display
-  local provider="unknown"
-  case "$base_url" in
-    *z.ai*)          provider="zai" ;;
-    *minimax*)       provider="minimax" ;;
-    *openrouter*)    provider="openrouter" ;;
-    *localhost*)     provider="lcp-local" ;;
-    *127.0.0.1*)     provider="lcp-local" ;;
-  esac
+  # Fall back to deriving provider name from base_url for backward compatibility.
+  # Prefer provider IDs that align with downstream session selection logic.
+  if [[ -z "$provider" ]]; then
+    provider="unknown"
+    case "$base_url" in
+      *z.ai*)          provider="zai" ;;
+      *minimax*)       provider="minimax" ;;
+      *openrouter*)    provider="openrouter-free" ;;
+      *localhost*)     provider="lcp-local" ;;
+      *127.0.0.1*)     provider="lcp-local" ;;
+    esac
+  fi
 
   # Pre-launch health check (non-blocking — just warn)
   _lcp_health_check "$base_url" "$opus_model" "$provider" || true
