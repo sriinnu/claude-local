@@ -50,9 +50,35 @@ _lcp_log_session() {
   local provider="$1" model="$2" base_url="$3" exit_code="$4" duration="$5"
   local ts
   ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  # Append one JSONL line — safe to run concurrently (O_APPEND writes are atomic < PIPE_BUF)
-  printf '{"ts":"%s","provider":"%s","model":"%s","base_url":"%s","exit":%s,"duration_s":%s}\n' \
-    "$ts" "$provider" "$model" "$base_url" "$exit_code" "$duration" >> "$_LCP_SESSION_LOG" 2>/dev/null
+  # Append one JSONL line using a real JSON encoder so user-provided values are escaped safely.
+  # Keep numeric fields as JSON numbers when possible; otherwise emit null to preserve valid JSON.
+  python3 - "$ts" "$provider" "$model" "$base_url" "$exit_code" "$duration" >> "$_LCP_SESSION_LOG" 2>/dev/null <<'PY'
+import json
+import sys
+
+ts, provider, model, base_url, exit_code, duration = sys.argv[1:7]
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def parse_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+print(json.dumps({
+    "ts": ts,
+    "provider": provider,
+    "model": model,
+    "base_url": base_url,
+    "exit": parse_int(exit_code),
+    "duration_s": parse_float(duration),
+}, separators=(",", ":")))
+PY
 }
 
 # Internal: pre-launch health check for a provider
