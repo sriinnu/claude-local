@@ -2,51 +2,226 @@
 # Load API keys
 [ -f ~/.env.claude ] && source ~/.env.claude
 
-# GLM (Z.AI) - Cost-effective option
-zai() {
+# Directory layout — set these at the top so all functions can reference them
+# Allow callers to override _LCP_DIR, otherwise default to the directory containing
+# this sourced config file so the setup is portable across machines.
+_LCP_CONFIG_DIR="${${(%):-%N}:A:h}"
+_LCP_DIR="${_LCP_DIR:-$_LCP_CONFIG_DIR}"
+_LCP_LIB_DIR="${_LCP_LIB_DIR:-${_LCP_DIR}/lib}"
+
+# Internal: source-time preflight checks
+# Warns once at load if key dependencies or config are missing.
+_lcp_preflight() {
+  local ok=true
+  if ! command -v claude &>/dev/null; then
+    echo "⚠ [lcp] 'claude' not found in PATH — install Claude Code first" >&2
+    ok=false
+  fi
+  if ! command -v python3 &>/dev/null; then
+    echo "⚠ [lcp] 'python3' not found in PATH" >&2
+    ok=false
+  fi
+  if ! command -v curl &>/dev/null; then
+    echo "⚠ [lcp] 'curl' not found in PATH — OpenRouter/HF features will fail" >&2
+    ok=false
+  fi
+  [[ -d "$_LCP_LIB_DIR" ]] || {
+    # Create lib symlink if possible, warn otherwise
+    if [[ -d "$_LCP_DIR/lib" ]]; then
+      _LCP_LIB_DIR="$_LCP_DIR/lib"
+    else
+      echo "⚠ [lcp] lib/ directory not found at $_LCP_DIR/lib — Python helpers unavailable" >&2
+    fi
+  }
+  $ok || echo "  → Some warnings above. Basic lcp/local may still work." >&2
+}
+_lcp_preflight
+unset _lcp_preflight  # clean up — only needed at source time
+
+# Internal: known provider API keys to scrub from subshell environments
+# Prevents cross-provider credential leakage (e.g., ZAI key visible to OpenRouter)
+_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY OPENROUTER_API_KEY ANTHROPIC_API_KEY)
+
+# Internal: observability — session log location
+_LCP_SESSION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/lcp/sessions.jsonl"
+
+# Internal: record one session's metadata for observability/cost tracking
+_lcp_log_session() {
+  local provider="$1" model="$2" base_url="$3" exit_code="$4" duration="$5"
+  local ts
+  ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  # Append one JSONL line using a real JSON encoder so user-provided values are escaped safely.
+  # Keep numeric fields as JSON numbers when possible; otherwise emit null to preserve valid JSON.
+  python3 - "$ts" "$provider" "$model" "$base_url" "$exit_code" "$duration" >> "$_LCP_SESSION_LOG" 2>/dev/null <<'PY'
+import json
+import sys
+
+ts, provider, model, base_url, exit_code, duration = sys.argv[1:7]
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def parse_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+print(json.dumps({
+    "ts": ts,
+    "provider": provider,
+    "model": model,
+    "base_url": base_url,
+    "exit": parse_int(exit_code),
+    "duration_s": parse_float(duration),
+}, separators=(",", ":")))
+PY
+}
+
+# Internal: pre-launch health check for a provider
+# Prints warnings if the endpoint is unreachable or the model seems unavailable
+_lcp_health_check() {
+  local base_url="$1" model="$2" provider="$3"
+
+  # Skip health check for localhost (local already does its own health polling)
+  if [[ "$base_url" == http://localhost* || "$base_url" == http://127.0.0.1* ]]; then
+    return 0
+  fi
+
+  # Quick ping to the base URL
+  if ! curl -sf -m 5 "$base_url/v1/models" &>/dev/null; then
+    echo "⚠ $provider endpoint unreachable: $base_url"
+    echo "  Check your API key and network connectivity."
+    # For OpenRouter, check specific model availability via the models list
+    if [[ "$base_url" == *"openrouter"* ]]; then
+      local check
+      check=$(python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/provider_health.py" \
+        --model "$model" --models-url "https://openrouter.ai/api/v1/models" 2>/dev/null)
+      [[ -n "$check" ]] && echo "$check"
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# Internal: unified launcher for any Claude Code provider
+# Usage: _launch_claude <base_url> <auth_token> <opus_model> <sonnet_model> <haiku_model> [provider_id] [--arg ...]
+# Passing the same model for all three roles is equivalent to single-model mode.
+# Use provider_id for logging/health checks when multiple logical providers share the same base URL
+# (for example: openrouter-free vs openrouter-paid).
+_launch_claude() {
+  local base_url="$1" auth_token="$2"
+  local opus_model="$3" sonnet_model="$4" haiku_model="$5"
+  shift 5
+
+  # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
+  local provider=""
+  case "${1:-}" in
+    zai|minimax|openrouter-free|openrouter-paid|lcp-local|openrouter)
+      provider="$1"
+      shift
+      ;;
+  esac
+
+  # Ensure run directory exists
+  mkdir -p "$(dirname "$_LCP_SESSION_LOG")"
+
+  # Fall back to deriving provider name from base_url for backward compatibility.
+  # Prefer provider IDs that align with downstream session selection logic.
+  if [[ -z "$provider" ]]; then
+    provider="unknown"
+    case "$base_url" in
+      *z.ai*)          provider="zai" ;;
+      *minimax*)       provider="minimax" ;;
+      *openrouter*)    provider="openrouter-free" ;;
+      *localhost*)     provider="lcp-local" ;;
+      *127.0.0.1*)     provider="lcp-local" ;;
+    esac
+  fi
+
+  # Pre-launch health check (non-blocking — just warn)
+  _lcp_health_check "$base_url" "$opus_model" "$provider" || true
+
+  echo "→ $provider ($opus_model)"
+  echo ""
+
+  local start_ts
+  start_ts=$(date +%s)
   (
-    export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
-    #export ANTHROPIC_BASE_URL="https://api.z.ai/api/coding/paas/v4"
-    export ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY"
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+    # Scrub all provider keys from this subshell's environment
+    local k
+    for k in "${_LCP_PROVIDER_KEYS[@]}"; do
+      unset "$k"
+    done
+    export ANTHROPIC_BASE_URL="$base_url"
+    export ANTHROPIC_AUTH_TOKEN="$auth_token"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$opus_model"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$sonnet_model"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
+    export ANTHROPIC_MODEL="$opus_model"
+    export ANTHROPIC_SMALL_FAST_MODEL="$sonnet_model"
     export API_TIMEOUT_MS="3000000"
-    export CLAUDE_CODE_ATTRIBUTION_HEADER="0"
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     claude "$@"
   )
+  local exit_code=$?
+  local end_ts
+  end_ts=$(date +%s)
+  local duration=$((end_ts - start_ts))
+
+  # Format duration for display
+  local dur_display
+  if [[ $duration -ge 3600 ]];      then dur_display="$((duration/3600))h $((duration%3600/60))m"
+  elif [[ $duration -ge 60 ]];      then dur_display="$((duration/60))m $((duration%60))s"
+  else                                   dur_display="${duration}s"
+  fi
+
+  # Log the session
+  _lcp_log_session "$provider" "$opus_model" "$base_url" "$exit_code" "$duration"
+
+  if [[ $exit_code -eq 0 ]]; then
+    echo "✔ Session complete — $provider | $dur_display"
+  elif [[ $exit_code -eq 130 ]]; then
+    echo "✔ Interrupted (Ctrl-C) — $provider | $dur_display"
+  else
+    echo "✗ Exit code $exit_code — $provider | $dur_display"
+  fi
+}
+
+# GLM (Z.AI) - Cost-effective option
+zai() {
+  _launch_claude \
+    "https://api.z.ai/api/anthropic" \
+    "$ZAI_API_KEY" \
+    "glm-5" \
+    "glm-5" \
+    "glm-4.5-air" \
+    "$@"
 }
 
 # MiniMax - Experimental
 minimax() {
-  (
-    export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
-    export ANTHROPIC_AUTH_TOKEN="$MINIMAX_API_KEY"
-    export ANTHROPIC_MODEL="MiniMax-M2.7"
-    export ANTHROPIC_SMALL_FAST_MODEL="MiniMax-M2.7"
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="MiniMax-M2.7"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="MiniMax-M2.7"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M2.7"
-    export API_TIMEOUT_MS="3000000"
-    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-    claude "$@"
-  )
+  _launch_claude \
+    "https://api.minimax.io/anthropic" \
+    "$MINIMAX_API_KEY" \
+    "MiniMax-M2.7" \
+    "MiniMax-M2.7" \
+    "MiniMax-M2.7" \
+    "$@"
 }
 
 # OpenRouter - paid models (Claude, etc.)
 openrouter() {
-  (
-    export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
-    export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
-    export ANTHROPIC_API_KEY=""
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="anthropic/claude-opus-4"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="anthropic/claude-sonnet-4"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="anthropic/claude-haiku-3.5"
-    export API_TIMEOUT_MS="3000000"
-    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-    claude "$@"
-  )
+  _launch_claude \
+    "https://openrouter.ai/api" \
+    "$OPENROUTER_API_KEY" \
+    "anthropic/claude-opus-4" \
+    "anthropic/claude-sonnet-4" \
+    "anthropic/claude-haiku-3.5" \
+    "$@"
 }
 
 # === OpenRouter FREE models ===
@@ -97,12 +272,14 @@ orf() {
       local i=1
       for entry in "${_OR_FREE_MODELS[@]}"; do
         printf "  %2d) %s\n" "$i" "$entry"
-        ((i++))
+        i=$((i + 1))
       done
       echo ""
       echo -n "Pick a number (or install fzf for fuzzy search): "
       read -r choice
       [[ -z "$choice" ]] && return 1
+      [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Invalid choice: $choice"; return 1; }
+      [[ $choice -ge 1 && $choice -le ${#_OR_FREE_MODELS[@]} ]] || { echo "Out of range (1-${#_OR_FREE_MODELS[@]})"; return 1; }
       model="${_OR_FREE_MODELS[$choice]%%|*}"
       model="${model// /}"
     else
@@ -117,41 +294,82 @@ orf() {
   fi
 
   echo "Using model: $model"
-  (
-    export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
-    export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
-    export ANTHROPIC_API_KEY=""
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="$model"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="$model"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$model"
-    export API_TIMEOUT_MS="3000000"
-    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-    claude "$@"
-  )
+  _launch_claude "https://openrouter.ai/api" "$OPENROUTER_API_KEY" "$model" "$model" "$model" "$@"
 }
 
 # Refresh free models list from OpenRouter API
 orf-update() {
   echo "Fetching free models from OpenRouter..."
-  curl -s "https://openrouter.ai/api/v1/models" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-free = []
-for m in data.get('data', []):
-    p = m.get('pricing', {})
-    if str(p.get('prompt','1')) == '0' and str(p.get('completion','1')) == '0':
-        mid = m['id']
-        name = m.get('name','')
-        ctx = m.get('context_length', 0)
-        if ctx >= 1000000: ctxs = f'{ctx//1000000}M'
-        elif ctx >= 1000: ctxs = f'{ctx//1000}k'
-        else: ctxs = str(ctx)
-        free.append((mid, name, ctxs))
-for mid, name, ctxs in sorted(free):
-    print(f'  \"{mid:<50s} | {name:<25s} | ctx:{ctxs}\"')
-print(f'\nTotal: {len(free)} free models')
-print('Copy the output above to update _OR_FREE_MODELS in ~/.claude_config.zsh')
-"
+  curl -sf "https://openrouter.ai/api/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/or_free_update.py"
+}
+
+# === OpenRouter model browser with live pricing ===
+# Browse, search, and filter ALL OpenRouter models
+# Usage:
+#   or-models                     # list all models (piped to less)
+#   or-models gemma-4             # search for gemma-4
+#   or-models --free              # free models only
+#   or-models --cheap             # sort by cheapest first
+#   or-models --max-tokens        # sort by provider max token limit
+#   or-models --free gemma        # combine: free gemma models
+#   or-models gemma-4 --use       # search + pick one to launch with Claude Code
+
+or-models() {
+  local search="" filter="all" sort_by="name" use_model=false claude_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --free)   filter="free"; shift ;;
+      --paid)   filter="paid"; shift ;;
+      --cheap)  sort_by="cheap"; shift ;;
+      --max-tokens) sort_by="max_tokens"; shift ;;
+      --use)    use_model=true; shift ;;
+      --help)
+        echo "or-models — Browse all OpenRouter models with live pricing"
+        echo ""
+        echo "Usage:"
+        echo "  or-models                     List all models"
+        echo "  or-models <query>             Search by name/id"
+        echo "  or-models --free              Free models only"
+        echo "  or-models --paid              Paid models only"
+        echo "  or-models --cheap             Sort by cheapest prompt cost"
+        echo "  or-models --max-tokens        Sort by provider max token limit"
+        echo "  or-models --use               Pick a model and launch Claude Code"
+        echo "  or-models --free gemma        Combine filters with search"
+        echo ""
+        echo "Examples:"
+        echo "  or-models gemma-4             Find Gemma 4 variants"
+        echo "  or-models --cheap --paid      Cheapest paid models"
+        echo "  or-models qwen --use          Search qwen, pick one, launch"
+        return 0
+        ;;
+      -*)     claude_args+=("$1"); shift ;;
+      *)      search="$1"; shift ;;
+    esac
+  done
+
+  local output
+  output=$(curl -sf "https://openrouter.ai/api/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/or_models.py" \
+    --search "$search" $([[ "$filter" == "free" ]] && echo --free) $([[ "$filter" == "paid" ]] && echo --paid) \
+    --sort "$sort_by" 2>&1)
+  if [[ ${#output} -eq 0 ]]; then
+    echo "Failed to fetch models from OpenRouter."
+    return 1
+  fi
+
+  if $use_model; then
+    echo "$output"
+    echo ""
+    echo -n "  Enter model ID to use (or empty to cancel): "
+    read -r picked
+    [[ -z "$picked" ]] && return 1
+    echo ""
+    echo "Launching Claude Code with $picked..."
+    _launch_claude "https://openrouter.ai/api" "$OPENROUTER_API_KEY" "$picked" "$picked" "$picked" "${claude_args[@]}"
+  elif command -v less &>/dev/null && [[ -t 1 ]]; then
+    echo "$output" | less -R
+  else
+    echo "$output"
+  fi
 }
 
 # === llama.cpp LOCAL inference ===
@@ -164,11 +382,12 @@ print('Copy the output above to update _OR_FREE_MODELS in ~/.claude_config.zsh')
 #   lcp --status                 # check if server is running
 #   lcp --pull <hf-repo> <file>  # download a GGUF from HuggingFace
 
-_LCP_DIR="$HOME/Sriinnu/Personal/llama-cpp-setup"  # Change this to wherever you cloned the repo
 _LCP_MODELS_DIR="$_LCP_DIR/models"
 _LCP_SERVER="$HOME/.local/bin/llama-server"
 _LCP_PORT=8776
-_LCP_PIDFILE="/tmp/llama-server.pid"
+_LCP_RUNDIR="${XDG_CACHE_HOME:-$HOME/.cache}/lcp"
+_LCP_PIDFILE="$_LCP_RUNDIR/llama-server.pid"
+_lcp_ensure_rundir() { mkdir -p "$_LCP_RUNDIR"; }
 
 # Default server settings (tuned for M3 Pro 36GB + 22GB model)
 _LCP_CTX_SIZE=32768        # 32k context — safe for 22GB model on 36GB RAM (use --ctx to override)
@@ -179,6 +398,12 @@ _LCP_UBATCH_SIZE=1024      # bigger micro-batch for Metal (M3 handles this well)
 _LCP_FLASH_ATTN=1          # flash attention (faster, less memory)
 
 lcp() {
+  # Install cleanup trap — if the shell dies, crashes, or user disconnects,
+  # the background llama-server gets stopped automatically instead of orphaning.
+  # Cleared later if the user says "keep server running."
+  _lcp_cleanup() { kill "$(cat "$_LCP_PIDFILE" 2>/dev/null)" 2>/dev/null; rm -f "$_LCP_PIDFILE" 2>/dev/null; }
+  trap '_lcp_cleanup' EXIT INT TERM
+
   case "${1:-}" in
     --stop)
       if [[ -f "$_LCP_PIDFILE" ]] && kill -0 "$(cat "$_LCP_PIDFILE")" 2>/dev/null; then
@@ -208,7 +433,7 @@ lcp() {
         [[ -f "$f" ]] || continue
         local size=$(du -h "$f" | cut -f1)
         printf "  %-50s %s\n" "$(basename "$f")" "$size"
-        ((count++))
+        count=$((count + 1))
       done
       [[ $count -eq 0 ]] && echo "  (none — use 'lcp --pull <repo> <file>' to download)"
       echo ""
@@ -222,11 +447,7 @@ lcp() {
         return 1
       fi
       echo "Downloading $3 from $2..."
-      python3 -c "
-from huggingface_hub import hf_hub_download
-path = hf_hub_download(repo_id='$2', filename='$3', local_dir='$_LCP_MODELS_DIR', local_dir_use_symlinks=False)
-print(f'Downloaded to: {path}')
-"
+      python3 "$_LCP_LIB_DIR/download_gguf.py" --repo "$2" --file "$3" --dir "$_LCP_MODELS_DIR"
       return $?
       ;;
     --help)
@@ -252,16 +473,27 @@ print(f'Downloaded to: {path}')
       ;;
   esac
 
-  # Parse optional flags
+  # Validate binary exists before attempting launch
+  if [[ ! -x "$_LCP_SERVER" ]]; then
+    echo "llama-server not found at $_LCP_SERVER"
+    echo "Build it: see README.md → Build from source"
+    return 1
+  fi
+
+  # Parse optional flags — collect unknown flags for passthrough to claude
   local ctx_override=""
   local model_hint=""
+  local passthru=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --ctx) ctx_override="$2"; shift 2 ;;
-      -*) break ;;  # remaining flags go to claude
-      *) model_hint="$1"; shift; break ;;
+      -*)    passthru+=("$1"); shift ;;   # forward unknown flags to claude
+      *)     model_hint="$1"; shift; break ;;
     esac
   done
+
+  # Ensure run directory exists
+  _lcp_ensure_rundir
 
   # Find the model file
   local model_file=""
@@ -311,11 +543,13 @@ print(f'Downloaded to: {path}')
       for f in "${gguf_files[@]}"; do
         local size=$(du -h "$f" | cut -f1)
         printf "  %2d) %-45s %s\n" "$i" "$(basename "$f")" "$size"
-        ((i++))
+        i=$((i + 1))
       done
       echo -n "Pick a number: "
       read -r choice
       [[ -z "$choice" ]] && return 1
+      [[ "$choice" =~ ^[0-9]+$ ]] || { echo "Invalid choice: $choice"; return 1; }
+      [[ $choice -ge 1 && $choice -le ${#gguf_files[@]} ]] || { echo "Out of range (1-${#gguf_files[@]})"; return 1; }
       model_file="${gguf_files[$choice]}"
     fi
   fi
@@ -326,11 +560,17 @@ print(f'Downloaded to: {path}')
   echo "GPU:     $_LCP_GPU_LAYERS layers | Flash attention: $([ $_LCP_FLASH_ATTN -eq 1 ] && echo ON || echo OFF)"
   echo ""
 
-  # Stop existing server if running
+  # Stop existing server if running, wait for port release
   if [[ -f "$_LCP_PIDFILE" ]] && kill -0 "$(cat "$_LCP_PIDFILE")" 2>/dev/null; then
     echo "Stopping existing llama-server (PID: $(cat "$_LCP_PIDFILE"))..."
     kill "$(cat "$_LCP_PIDFILE")"
-    sleep 1
+    # Wait for process to exit and port to release (max 10s)
+    local waited=0
+    while kill -0 "$(cat "$_LCP_PIDFILE")" 2>/dev/null || curl -sf "http://localhost:$_LCP_PORT/health" &>/dev/null; do
+      sleep 0.5
+      waited=$((waited + 1))
+      [[ $waited -gt 20 ]] && { echo "Port $_LCP_PORT still in use. Kill manually and retry."; return 1; }
+    done
   fi
 
   # Launch llama-server in background
@@ -349,7 +589,7 @@ print(f'Downloaded to: {path}')
     --cache-type-k q8_0 \
     --cache-type-v q8_0 \
     --log-disable \
-    &>/tmp/llama-server.log &
+    &>"$_LCP_RUNDIR/llama-server.log" &
   echo $! > "$_LCP_PIDFILE"
 
   # Wait for server to be ready
@@ -358,33 +598,240 @@ print(f'Downloaded to: {path}')
   while ! curl -sf "http://localhost:$_LCP_PORT/health" &>/dev/null; do
     echo -n "."
     sleep 1
-    ((attempts++))
+    attempts=$((attempts + 1))
     if [[ $attempts -gt 120 ]]; then
-      echo " TIMEOUT (check /tmp/llama-server.log)"
+      echo " TIMEOUT (check $_LCP_RUNDIR/llama-server.log)"
       return 1
     fi
   done
   echo " ready!"
   echo ""
 
+  # Clear INT/TERM traps — we want Ctrl-C and kill to reach Claude, not kill the server
+  trap '' INT TERM
+
   # Launch Claude Code connected to local server
-  (
-    export ANTHROPIC_BASE_URL="http://localhost:$_LCP_PORT"
-    export ANTHROPIC_AUTH_TOKEN="local"
-    export ANTHROPIC_API_KEY=""
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="$(basename "$model_file" .gguf)"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="$(basename "$model_file" .gguf)"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$(basename "$model_file" .gguf)"
-    export API_TIMEOUT_MS="3000000"
-    export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-    claude "$@"
-  )
+  local model_name
+  model_name=$(basename "$model_file" .gguf)
+  _launch_claude "http://localhost:$_LCP_PORT" "local" "$model_name" "$model_name" "$model_name" "$@" "${passthru[@]}"
 
   # Ask if user wants to keep server running
+  if [[ -t 0 ]]; then
+    echo ""
+    echo -n "Keep llama-server running? [y/N]: "
+    read -r keep
+    if [[ "$keep" != [yY]* ]]; then
+      lcp --stop
+    else
+      trap - EXIT  # remove cleanup trap — server stays alive
+      echo "llama-server stays running (PID: $(cat "$_LCP_PIDFILE" 2>/dev/null))"
+    fi
+  fi
+}
+
+# === HUGGING FACE — load any LLM ===
+# Search, download, and run any model from HF Hub in one command
+# Usage:
+#   hf                                  # interactive search + pick + download + launch
+#   hf qwen3 coder                      # search keyword, pick, download, launch
+#   hf --pull <repo> <file>             # download specific file then launch
+#   hf --list                           # list downloaded models
+#   hf --stop                           # stop running server
+#   hf --status                         # check server status
+
+# Hugging Face inference server config
+_HF_MODEL_DIR="$_LCP_MODELS_DIR"  # reuse the same models directory
+
+# Internal: HF Hub search and download
+hf() {
+  case "${1:-}" in
+    --pull)
+      if [[ -z "${2:-}" || -z "${3:-}" ]]; then
+        echo "Usage: hf --pull <hf-repo-id> <filename>"
+        echo "Example: hf --pull unsloth/Qwen3-30B-A3B-GGUF Qwen3-30B-A3B-Q4_K_M.gguf"
+        return 1
+      fi
+      echo "Downloading $3 from $2..."
+      python3 "$_LCP_LIB_DIR/download_gguf.py" --repo "$2" --file "$3" --dir "$_HF_MODEL_DIR"
+      return $?
+      ;;
+    --list)
+      lcp --list
+      return $?
+      ;;
+    --stop)
+      lcp --stop
+      return $?
+      ;;
+    --status)
+      lcp --status
+      return $?
+      ;;
+    --help)
+      echo "hf — Search, download, and run any Hugging Face model"
+      echo ""
+      echo "Usage:"
+      echo "  hf                              Interactive search + download + launch"
+      echo "  hf <keywords>                   Search, pick, download, launch"
+      echo "  hf --pull <repo> <file>         Download a specific GGUF file"
+      echo "  hf --list                       List downloaded models"
+      echo "  hf --stop                       Stop the running server"
+      echo "  hf --status                     Check server status"
+      echo "  hf --help                       This help"
+      return 0
+      ;;
+  esac
+
+  # Parse lcp tuning flags and pass them through to the final launch
+  local lcp_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ctx) lcp_args+=("$1" "$2"); shift 2 ;;
+      -*)    lcp_args+=("$1"); shift ;;
+      *)     break ;;
+    esac
+  done
+
+  # Search Hugging Face Hub for GGUF models
+  local query="$*"
+  [[ -z "$query" ]] && query="llm.gguf"
+
+  echo "Searching Hugging Face Hub for: $query..."
+
+  local results
+  results=$(python3 "$_LCP_LIB_DIR/hf_search.py" --query "$query" 2>&1) || { echo "HF search failed. Do you have huggingface-hub installed?"; echo "Install: pip install huggingface-hub"; return 1; }
+
+  if [[ -z "$results" ]]; then
+    echo "No models found matching: $query"
+    return 1
+  fi
+
   echo ""
-  echo -n "Keep llama-server running? [y/N]: "
-  read -r keep
-  if [[ "$keep" != [yY]* ]]; then
-    lcp --stop
+  echo "Top Hugging Face GGUF models:"
+  echo ""
+  echo "$results" | head -20  # Show top 20
+
+  echo ""
+  if command -v fzf &>/dev/null; then
+    local picked
+    picked=$(echo "$results" | fzf --prompt="Pick a model> " --height=30 --layout=reverse)
+    [[ -z "$picked" ]] && return 1
+    local repo="${picked%%|*}"
+    repo="${repo// /}"
+  else
+    echo "Enter the full repo ID to download:"
+    echo -n "> "
+    read -r repo
+    [[ -z "$repo" ]] && return 1
+  fi
+
+  echo ""
+  echo "Searching for available GGUF files in: $repo..."
+
+  # List available GGUF files
+  local files
+  files=$(python3 "$_LCP_LIB_DIR/hf_files.py" "$repo" 2>&1)
+
+  if [[ "$files" == *"No GGUF files found"* ]]; then
+    echo "No GGUF files found. This model may not have GGUF weights uploaded."
+    return 1
+  fi
+
+  echo ""
+  echo "Available GGUF files:"
+  echo "$files"
+
+  echo ""
+  local picked_file=""
+  if command -v fzf &>/dev/null; then
+    picked_file=$(echo "$files" | fzf --prompt="Pick a GGUF file> " --height=20)
+    [[ -z "$picked_file" ]] && return 1
+  else
+    echo "Enter filename to download:"
+    echo -n "> "
+    read -r picked_file
+    [[ -z "$picked_file" ]] && return 1
+  fi
+
+  # Ensure models directory exists
+  mkdir -p "$_HF_MODEL_DIR"
+
+  # Download via lcp --pull
+  echo ""
+  echo "Downloading $picked_file from $repo..."
+  lcp --pull "$repo" "$picked_file" || return $?
+
+  # Now launch with lcp, passing through any tuning flags
+  echo ""
+  echo "Model downloaded. Launching..."
+  lcp "${lcp_args[@]}" "$picked_file"
+}
+
+# ==============================================================================
+# === OBSERVABILITY & ROUTING ==================================================
+# ==============================================================================
+
+# llp-stats — session dashboard
+# Tracks sessions, error rates, avg duration, and per-provider breakdown.
+# Usage: llp-stats
+llp-stats() {
+  [ -f "$_LCP_SESSION_LOG" ] || { echo "No session data yet — run a session first."; return 1; }
+  python3 "$_LCP_LIB_DIR/session_stats.py" "$_LCP_SESSION_LOG"
+}
+
+# llp-history — raw session log viewer
+# Usage: llp-history          # last 10
+#        llp-history 30       # last 30
+#        llp-history all      # everything
+llp-history() {
+  [ -f "$_LCP_SESSION_LOG" ] || { echo "No session log found."; return 1; }
+  local n="${1:-10}"
+  local _pretty_jsonl='import json, sys
+first = True
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    if not first:
+        print()
+    print(json.dumps(json.loads(line), indent=2, ensure_ascii=False))
+    first = False'
+  if [[ "$n" == "all" ]]; then
+    cat "$_LCP_SESSION_LOG" | python3 -c "$_pretty_jsonl"
+  else
+    tail -n "$n" "$_LCP_SESSION_LOG" | python3 -c "$_pretty_jsonl"
+  fi
+}
+
+# llp-which — intelligent provider recommendation
+# Analyzes provider health, recent error rates, and task type to recommend a model.
+# Usage: llp-which                    # general recommendation
+#        llp-which code               # coding task
+#        llp-which reasoning          # reasoning/math
+#        llp-which fast               # quick query
+#        llp-which creative           # creative writing
+llp-which() {
+  local task="${1:-general}"
+  python3 "$_LCP_LIB_DIR/session_which.py" --task "$task" --log "$_LCP_SESSION_LOG"
+}
+
+# llp-quick — one-liner: launch the best free model right now
+# Picks the most reliable free OpenRouter model and launches immediately
+# with no prompts. For when you just want to code now.
+llp-quick() {
+  echo "→ Launching best free model (qwen/qwen3-coder:free)..."
+  orf qwen/qwen3-coder:free "$@"
+}
+
+# llp-reset — clear the session log
+# Usage: llp-reset
+llp-reset() {
+  if [[ -f "$_LCP_SESSION_LOG" ]]; then
+    local count
+    count=$(wc -l < "$_LCP_SESSION_LOG")
+    rm -f "$_LCP_SESSION_LOG"
+    echo "Cleared $count session entries from log."
+  else
+    echo "No session log found."
   fi
 }
