@@ -3,8 +3,11 @@
 [ -f ~/.env.claude ] && source ~/.env.claude
 
 # Directory layout — set these at the top so all functions can reference them
-_LCP_DIR="$HOME/Sriinnu/Personal/llama-cpp-setup"  # Change this to wherever you cloned the repo
-_LCP_LIB_DIR="${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}"
+# Allow callers to override _LCP_DIR, otherwise default to the directory containing
+# this sourced config file so the setup is portable across machines.
+_LCP_CONFIG_DIR="${${(%):-%N}:A:h}"
+_LCP_DIR="${_LCP_DIR:-$_LCP_CONFIG_DIR}"
+_LCP_LIB_DIR="${_LCP_LIB_DIR:-${_LCP_DIR}/lib}"
 
 # Internal: source-time preflight checks
 # Warns once at load if key dependencies or config are missing.
