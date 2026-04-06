@@ -764,7 +764,7 @@ hf() {
   # Now launch with lcp, passing through any tuning flags
   echo ""
   echo "Model downloaded. Launching..."
-  lcp "$picked_file" "${lcp_args[@]}"
+  lcp "${lcp_args[@]}" "$picked_file"
 }
 
 # ==============================================================================
