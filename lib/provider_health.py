@@ -18,7 +18,12 @@ def check_model(models_data: dict, model_id: str) -> str:
     pin = float(p.get("prompt", 0) or 0) * 1e6
     pout = float(p.get("completion", 0) or 0) * 1e6
     ctx = m.get("context_length", 0)
-    ctxs = f"{ctx // 1_000_000}M" if ctx >= 1_000_000 else f"{ctx // 1000}k"
+    if ctx < 1000:
+        ctxs = str(ctx)
+    elif ctx >= 1_000_000:
+        ctxs = f"{ctx // 1_000_000}M"
+    else:
+        ctxs = f"{ctx // 1000}k"
     is_free = pin == 0 and pout == 0
     status = "FREE" if is_free else f"${pin:.2f}/M in"
     return f"  Model {model_id}: {status}, ctx: {ctxs} — available"
