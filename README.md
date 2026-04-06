@@ -186,7 +186,7 @@ Extracted from the shell config for maintainability. No embedded Python in shell
 | `lib/provider_health.py` | Check OpenRouter model availability |
 | `lib/hf_search.py` | Search HF Hub for GGUF models |
 | `lib/hf_files.py` | List GGUF files in a repo |
-| `lib/download_gguf.py` | Safe GGUF download with path validation |
+| `lib/download_gguf.py` | Download a GGUF file from HF Hub |
 | `lib/session_stats.py` | Session statistics dashboard |
 | `lib/session_which.py` | Intelligent provider recommendation |
 
