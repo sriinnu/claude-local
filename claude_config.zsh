@@ -786,10 +786,20 @@ llp-stats() {
 llp-history() {
   [ -f "$_LCP_SESSION_LOG" ] || { echo "No session log found."; return 1; }
   local n="${1:-10}"
+  local _pretty_jsonl='import json, sys
+first = True
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    if not first:
+        print()
+    print(json.dumps(json.loads(line), indent=2, ensure_ascii=False))
+    first = False'
   if [[ "$n" == "all" ]]; then
-    cat "$_LCP_SESSION_LOG" | python3 -m json.tool --no-ensure-ascii 2>/dev/null
+    cat "$_LCP_SESSION_LOG" | python3 -c "$_pretty_jsonl"
   else
-    tail -n "$n" "$_LCP_SESSION_LOG" | python3 -m json.tool --no-ensure-ascii 2>/dev/null
+    tail -n "$n" "$_LCP_SESSION_LOG" | python3 -c "$_pretty_jsonl"
   fi
 }
 
