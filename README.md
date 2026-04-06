@@ -10,6 +10,7 @@
   <a href="#option-1-local-with-llamacpp">Local</a> &bull;
   <a href="#option-2-openrouter-free-models">Free Cloud</a> &bull;
   <a href="#option-3-openrouter-paid-models">Paid Cloud</a> &bull;
+  <a href="#browsing-all-openrouter-models">Model Browser</a> &bull;
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
@@ -19,6 +20,8 @@ Three ways to use LLMs with **Claude Code** or **OpenAI Codex CLI**:
 1. **Local** — llama.cpp with Metal GPU (free, private, offline)
 2. **OpenRouter Free** — 25+ cloud models at $0 cost
 3. **OpenRouter Paid** — Claude, GPT, Gemini, etc.
+
+Plus a **model browser** (`or-models`) to search all 300+ OpenRouter models with live pricing, a **session observability suite** (`llp-*`) with metrics and provider recommendations, extracted **lib/ Python helpers** for maintainability, and automated **preflight checks** on source.
 
 ---
 
@@ -73,6 +76,19 @@ orf qwen/qwen3-coder:free                   # use a specific free model
 
 # OpenRouter paid — use any premium model
 openrouter                                  # Claude, GPT, etc.
+
+# Browse all OpenRouter models with live pricing
+or-models                                   # browse all 300+ models
+or-models gemma-4                           # search by name
+or-models --free                            # free models only
+or-models gemma-4 --use                     # search, pick, launch
+
+# Observability & routing
+llp-which                                   # intelligent provider recommendation
+llp-stats                                   # session dashboard (error rates, durations)
+llp-history                                 # raw session log (last 10)
+llp-quick                                   # launch best free model immediately
+llp-reset                                   # clear session log
 ```
 
 ---
@@ -156,6 +172,23 @@ curl -L -o models/Qwen3-4B-Q4_K_M.gguf \
 | Q4_K_M   | Good          | ~30%            | Most popular, recommended default |
 | Q3_K_M   | Decent        | ~25%            | When RAM is tight |
 | IQ4_XS   | Good          | ~28%            | Experimental, slightly better than Q3 |
+
+---
+
+## lib/ Python helpers
+
+Extracted from the shell config for maintainability. No embedded Python in shell code.
+
+| Script | Purpose |
+|--------|---------|
+| `lib/or_models.py` | OpenRouter model browser formatter (search, filter, sort) |
+| `lib/or_free_update.py` | Refresh free models list for shell config |
+| `lib/provider_health.py` | Check OpenRouter model availability |
+| `lib/hf_search.py` | Search HF Hub for GGUF models |
+| `lib/hf_files.py` | List GGUF files in a repo |
+| `lib/download_gguf.py` | Safe GGUF download with path validation |
+| `lib/session_stats.py` | Session statistics dashboard |
+| `lib/session_which.py` | Intelligent provider recommendation |
 
 ### Recommended local models for coding
 
@@ -403,6 +436,76 @@ These are also available in `~/.claude_config.zsh`:
 zai                     # Z.AI GLM models (cost-effective)
 minimax                 # MiniMax M2.7 (experimental)
 ```
+
+---
+
+## Browsing All OpenRouter Models
+
+`or-models` pulls the full OpenRouter catalog (~350 models) with **live pricing** straight from the API.
+
+### Usage
+
+```bash
+or-models                          # all models (piped to less)
+or-models gemma-4                  # search by name or model ID
+or-models --free                   # free models only
+or-models --paid                   # paid models only
+or-models --cheap                  # sort by cheapest prompt cost
+or-models --top                    # sort by trending/popular
+or-models --free qwen              # combine: free qwen models
+or-models gemma-4 --use            # search → pick → launch Claude Code
+or-models --help                   # all options
+```
+
+### Examples
+
+```bash
+# Find Gemma 4 variants and pricing
+$ or-models gemma-4
+  Found 2 models matching "gemma-4" (out of 348 total)
+  ──────────────────────────────────────────────────────
+  google/gemma-4-26b-a4b-it       262k ctx   $0.13/M in  $0.40/M out
+  google/gemma-4-31b-it           262k ctx   $0.14/M in  $0.40/M out
+
+# Browse cheapest paid models
+$ or-models --cheap --paid
+
+# Search and directly launch a model
+$ or-models deepseek --use
+  # shows results → type a model ID → launches Claude Code with it
+```
+
+The `--use` flag turns the browser into a launcher — search, see pricing, pick a model, and Claude Code starts with it through OpenRouter. No config edits needed.
+
+> **Tip**: Pair with `orf-update` to refresh the free models list in your shell config, or just use `or-models --free` for a live view.
+
+---
+
+## Observability & Routing
+
+Every `claude` session is logged to JSONL: provider, model, exit code, duration, timestamp.
+
+```bash
+llp-which code               # "Which provider should I use for code?"
+llp-stats                     # dashboard: total sessions, error rates, avg duration
+llp-history 30                # last 30 sessions as formatted JSON
+llp-quick                     # instant launch of best free model
+llp-reset                     # clear session history
+```
+
+Data lives in `$XDG_CACHE_HOME/lcp/sessions.jsonl` (or `~/.cache/lcp/`). Concurrent-safe, append-only logging.
+
+> **How llp-which works**: It scores providers on task match, cost, privacy, and your actual error history from `sessions.jsonl`. If local crashes 30% of the time, it drops that provider. If OpenRouter free queues too often, the score reflects it.
+
+---
+
+## Architecture
+
+- **`_launch_claude()`** — single choke point. All providers flow through this function for consistent env setup, provider key scrubbing, session logging, and exit code capture.
+- **Key scrubbing** — known provider API keys are `unset` in the subshell before launching claude. Prevents cross-provider credential leakage.
+- **Orphan cleanup** — EXIT/INT/TERM traps kill the local llama-server if the shell dies before launching claude.
+- **`lib/`** — extracted Python helpers for HF search, OpenRouter formatting, session stats, and provider recommendation. No embedded Python in shell code.
+- **Preflight checks** — warns at source time if `claude`, `python3`, or `curl` are missing.
 
 ---
 
