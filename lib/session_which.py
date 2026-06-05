@@ -100,7 +100,7 @@ def main():
         if task == "code" and pid == "openrouter-free":
             print(f"     -> Best free: qwen/qwen3-coder:free (262k ctx, code-specialized)")
         if task == "reasoning" and pid == "openrouter-free":
-            print(f"     -> Best free: qwen/qwen3.6-plus:free (1M ctx) or openai/gpt-oss-120b:free")
+            print(f"     -> Best free: nvidia/nemotron-3-super-120b-a12b:free (1M ctx) or openai/gpt-oss-120b:free")
         if task == "fast" and pid == "openrouter-free":
             print(f"     -> Best free: nvidia/nemotron-3-nano-30b-a3b:free (256k, lightweight)")
         print()

@@ -53,6 +53,11 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 # Optional: other providers
 export ZAI_API_KEY="your-zai-key"
 export MINIMAX_API_KEY="your-minimax-key"
+export DEEPSEEK_API_KEY="your-deepseek-key"
+
+# Vercel AI Gateway (key from the Vercel dashboard → AI Gateway → API Keys)
+# Anthropic-native gateway to 280+ models. Needed for vai/vai-models.
+export AI_GATEWAY_API_KEY="vck_your-key-here"
 ```
 
 > **Just want free cloud models?** Set up the OpenRouter key above and skip straight to [Option 2](#option-2-openrouter-free-models) — no build or downloads needed.
@@ -69,13 +74,16 @@ Then pick your mode:
 # Local (llama.cpp) — free, private, offline
 lcp                                         # interactive model picker
 lcp gemma4                                  # fuzzy match a downloaded model
+hf                                          # search HF Hub → pick → download → launch
+hf qwen3 coder                              # search with keywords
 
 # OpenRouter free models — $0, cloud-hosted
 orf                                         # interactive picker (25+ models)
 orf qwen/qwen3-coder:free                   # use a specific free model
 
 # OpenRouter paid — use any premium model
-openrouter                                  # Claude, GPT, etc.
+openrouter                                  # hardcoded to Claude Opus/Sonnet/Haiku
+or-models --paid --use                      # full paid picker with live pricing
 
 # Browse all OpenRouter models with live pricing
 or-models                                   # browse all 300+ models
@@ -284,6 +292,23 @@ lcp --pull <repo> <file>  # download a model
 lcp --help             # all options
 ```
 
+### Discover new models with `hf`
+
+`hf` turns the whole "find → download → run" dance into a single command. It searches HuggingFace Hub for GGUF models, lets you pick a repo, shows available quant files, downloads the one you want, and launches llama.cpp with it — all interactive.
+
+```bash
+hf                              # interactive: search prompt → pick repo → pick file → launch
+hf qwen3 coder                  # search with keywords, then pick
+hf gemma 4 27b                  # narrow search
+hf --pull <repo> <file>         # skip search, download a specific file
+hf --list                       # alias for lcp --list
+hf --status                     # alias for lcp --status
+hf --stop                       # alias for lcp --stop
+hf --help                       # all options
+```
+
+Requires `huggingface-hub` (`pip install huggingface-hub`) and `fzf` for the interactive picker (falls back to numbered prompt without it). Downloads land in `models/` and are immediately runnable via `lcp`.
+
 ### Connect to OpenAI Codex CLI (local)
 
 llama.cpp also serves the OpenAI-compatible API at `/v1/chat/completions`.
@@ -333,9 +358,13 @@ orf qwen/qwen3-coder:free                   # specific model
 orf nvidia/nemotron-3-super-120b-a12b:free   # specific model
 ```
 
-### All free models (as of 2026-04-03)
+### All free models
 
-Run `orf-update` to refresh this list from the API.
+> **The live list lives in your shell, not here.** The tables below are a hand-kept
+> snapshot and *will* drift. For what's actually free right now, run `orf` (picker) or
+> `orf-update --dry-run` (preview). `orf-update` rewrites the list in `claude_config.zsh`
+> **and re-sources it automatically**, so new models show up in `orf` immediately — no
+> manual `source` step, no stale-shell confusion.
 
 #### Auto-router
 
@@ -349,14 +378,13 @@ Run `orf-update` to refresh this list from the API.
 
 | Model | ID | Context | Notes |
 |-------|----|---------|-------|
-| Qwen3 Coder 480B | `qwen/qwen3-coder:free` | 262k | MoE, purpose-built for code |
-| Qwen3.6 Plus | `qwen/qwen3.6-plus:free` | 1M | Huge context, very capable |
-| NVIDIA Nemotron 3 Super 120B | `nvidia/nemotron-3-super-120b-a12b:free` | 262k | MoE, fast |
+| Qwen3 Coder 480B | `qwen/qwen3-coder:free` | 262k | MoE, purpose-built for code — my pick |
+| Gemma 4 31B | `google/gemma-4-31b-it:free` | 262k | Dense, strongest Gemma, multimodal |
+| Gemma 4 26B A4B | `google/gemma-4-26b-a4b-it:free` | 262k | MoE — 4B active, very fast |
+| NVIDIA Nemotron 3 Super 120B | `nvidia/nemotron-3-super-120b-a12b:free` | 262k | MoE, reasoning-tuned |
 | Llama 3.3 70B | `meta-llama/llama-3.3-70b-instruct:free` | 65k | Solid all-rounder |
-| OpenAI GPT-OSS 120B | `openai/gpt-oss-120b:free` | 131k | OpenAI's open-source model |
+| OpenAI GPT-OSS 120B | `openai/gpt-oss-120b:free` | 131k | OpenAI's open-weights model |
 | Hermes 3 405B | `nousresearch/hermes-3-llama-3.1-405b:free` | 131k | Largest free model |
-
-> **Note**: Gemma 4 is **not free** on OpenRouter (paid only at `google/gemma-4-31b-it`). For Gemma 4, use the local llama.cpp option instead — see [Recommended local models](#recommended-local-models-for-coding).
 
 #### Good general-purpose
 
@@ -366,9 +394,9 @@ Run `orf-update` to refresh this list from the API.
 | NVIDIA Nemotron 3 Nano 30B | `nvidia/nemotron-3-nano-30b-a3b:free` | 256k | MoE, lightweight |
 | Arcee Trinity Large | `arcee-ai/trinity-large-preview:free` | 131k | Preview |
 | MiniMax M2.5 | `minimax/minimax-m2.5:free` | 196k | Large context |
-| Step 3.5 Flash | `stepfun/step-3.5-flash:free` | 256k | Fast |
 | OpenAI GPT-OSS 20B | `openai/gpt-oss-20b:free` | 131k | Smaller OSS model |
 | GLM 4.5 Air | `z-ai/glm-4.5-air:free` | 131k | Z.AI model |
+| Owl Alpha | `openrouter/owl-alpha` | 1M | OpenRouter's in-house preview |
 
 #### Smaller / lightweight
 
@@ -382,7 +410,6 @@ Run `orf-update` to refresh this list from the API.
 | NVIDIA Nemotron Nano 12B VL | `nvidia/nemotron-nano-12b-v2-vl:free` | 128k | Vision + language |
 | NVIDIA Nemotron Nano 9B | `nvidia/nemotron-nano-9b-v2:free` | 128k | Lightweight |
 | Llama 3.2 3B | `meta-llama/llama-3.2-3b-instruct:free` | 131k | Tiny |
-| Arcee Trinity Mini | `arcee-ai/trinity-mini:free` | 131k | Small preview |
 | Venice Uncensored 24B | `cognitivecomputations/dolphin-mistral-24b-venice-edition:free` | 32k | No guardrails |
 | LiquidAI 1.2B Instruct | `liquid/lfm-2.5-1.2b-instruct:free` | 32k | Experimental |
 | LiquidAI 1.2B Thinking | `liquid/lfm-2.5-1.2b-thinking:free` | 32k | Reasoning |
@@ -407,16 +434,24 @@ codex-openrouter() {
 - **Lower priority** — paid requests get served first
 - **May go offline** — OpenRouter can remove free tiers at any time
 - **No SLA** — don't rely on them for production work
+- **Stealth/alpha models** (e.g. `openrouter/owl-alpha`) — anonymized previews from
+  undisclosed labs, free *because* your prompts are used to tune the model. Expect slow
+  first-token latency (free routing + no prompt caching), and don't send anything
+  sensitive through them. They can vanish or get priced on the next `orf-update`.
 
 ---
 
 ## Option 3: OpenRouter Paid Models
 
-Access premium models (Claude, GPT, Gemini, DeepSeek, etc.) via OpenRouter.
+Access premium models (Claude, GPT, Gemini, DeepSeek, etc.) via OpenRouter. Two ways in:
+
+### Quick launch — `openrouter`
+
+Hardcoded to Claude. Fastest path if that's what you want.
 
 ```bash
 source ~/.claude_config.zsh
-openrouter                  # defaults to Claude models
+openrouter                  # defaults to Claude
 ```
 
 Default model mapping:
@@ -425,6 +460,22 @@ Default model mapping:
 - Haiku -> `anthropic/claude-haiku-3.5`
 
 You can change these in `~/.claude_config.zsh`.
+
+> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `minimax`, `deepseek`, `glmflash`, `qwenflash`, `geminiflash`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+
+### Interactive picker — `or-models --use`
+
+For anything other than Claude, use the paid picker flow — it's the same model browser documented below, with `--use` flipping it into launch mode.
+
+```bash
+or-models --paid --use              # browse all paid, pick, launch
+or-models --cheap --paid --use      # cheapest paid first (great for exploring)
+or-models claude --use              # search "claude", pick, launch
+or-models gpt-5 --use               # same for GPT
+or-models deepseek --use            # DeepSeek's paid tiers are stupidly cheap
+```
+
+No config edits, no model IDs to memorize — you see live pricing, pick one, Claude Code starts with it.
 
 ---
 
@@ -435,7 +486,93 @@ These are also available in `~/.claude_config.zsh`:
 ```bash
 zai                     # Z.AI GLM models (cost-effective)
 minimax                 # MiniMax M2.7 (experimental)
+deepseek                # DeepSeek V4 (pro/chat/flash)
 ```
+
+### Vercel AI Gateway — `vai`
+
+One Anthropic-native endpoint fronting 280+ models (Anthropic, OpenAI, Google, etc.), with traffic and spend visible in your Vercel dashboard. Because it speaks the Messages API directly, it drops straight into Claude Code — no translation proxy.
+
+```bash
+vai                            # launch with Claude (opus-4.8/sonnet-4.6/haiku-4.5)
+vai-models                     # browse all 280+ models with live pricing
+vai-models claude-opus         # search by name/id
+vai-models --cheap             # cheapest first
+vai-models --free              # free models only
+vai-models gpt-5 --use         # search, pick, launch Claude Code with it
+```
+
+Set `AI_GATEWAY_API_KEY` in `~/.env.claude` (above). `vai-models` needs no key to *list* — only `vai` / `--use` need it to launch. Model IDs are `creator/model` slugs; `vai-models` reads the **live** catalog, so trust it over the hardcoded defaults in `vai`.
+
+---
+
+## Browsing All OpenRouter Models
+
+`or-models` pulls the full OpenRouter catalog (~350 models) with **live pricing** straight from the API.
+
+### Usage
+
+```bash
+or-models                          # all models (piped to less)
+or-models gemma-4                  # search by name or model ID
+or-models --free                   # free models only
+or-models --paid                   # paid models only
+or-models --cheap                  # sort by cheapest prompt cost
+or-models --max-tokens             # sort by context window size
+or-models --free qwen              # combine: free qwen models
+or-models gemma-4 --use            # search → pick → launch Claude Code
+or-models --help                   # all options
+```
+
+### Examples
+
+```bash
+# Find Gemma 4 variants and pricing
+$ or-models gemma-4
+  Found 2 models matching "gemma-4" (out of 348 total)
+  ──────────────────────────────────────────────────────
+  google/gemma-4-26b-a4b-it       262k ctx   $0.13/M in  $0.40/M out
+  google/gemma-4-31b-it           262k ctx   $0.14/M in  $0.40/M out
+
+# Browse cheapest paid models
+$ or-models --cheap --paid
+
+# Search and directly launch a model
+$ or-models deepseek --use
+  # shows results → type a model ID → launches Claude Code with it
+```
+
+The `--use` flag turns the browser into a launcher — search, see pricing, pick a model, and Claude Code starts with it through OpenRouter. No config edits needed.
+
+> **Tip**: Pair with `orf-update` to refresh the free models list in your shell config, or just use `or-models --free` for a live view.
+
+---
+
+## Observability & Routing
+
+Every `claude` session is logged to JSONL: provider, model, exit code, duration, timestamp.
+
+```bash
+llp-which code               # "Which provider should I use for code?"
+llp-stats                     # dashboard: total sessions, error rates, avg duration
+llp-history 30                # last 30 sessions as formatted JSON
+llp-quick                     # instant launch of best free model
+llp-reset                     # clear session history
+```
+
+Data lives in `$XDG_CACHE_HOME/lcp/sessions.jsonl` (or `~/.cache/lcp/`). Concurrent-safe, append-only logging.
+
+> **How llp-which works**: It scores providers on task match, cost, privacy, and your actual error history from `sessions.jsonl`. If local crashes 30% of the time, it drops that provider. If OpenRouter free queues too often, the score reflects it.
+
+---
+
+## Architecture
+
+- **`_launch_claude()`** — single choke point. All providers flow through this function for consistent env setup, provider key scrubbing, session logging, and exit code capture.
+- **Key scrubbing** — known provider API keys are `unset` in the subshell before launching claude. Prevents cross-provider credential leakage.
+- **Orphan cleanup** — EXIT/INT/TERM traps kill the local llama-server if the shell dies before launching claude.
+- **`lib/`** — extracted Python helpers for HF search, OpenRouter formatting, session stats, and provider recommendation. No embedded Python in shell code.
+- **Preflight checks** — warns at source time if `claude`, `python3`, or `curl` are missing.
 
 ---
 
@@ -543,5 +680,5 @@ Symlinks in `~/.local/bin/` automatically pick up the new binaries.
 **Model gives bad output**
 - Try a larger model or higher quant.
 - Qwen3-4B is good for testing but not great for complex coding. Use Qwen3-30B-A3B, Gemma-4-26B-A4B, or larger for real work.
-- On OpenRouter, `qwen/qwen3-coder:free` or `qwen/qwen3.6-plus:free` are the strongest free options.
+- On OpenRouter, `qwen/qwen3-coder:free` or `google/gemma-4-31b-it:free` are the strongest free options.
 - For Gemma 4, use unsloth's `UD-` (Unsloth Dynamic) quantized GGUFs. The `XL` variants include full MoE expert weights for better quality.
