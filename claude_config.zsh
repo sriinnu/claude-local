@@ -3,8 +3,11 @@
 [ -f ~/.env.claude ] && source ~/.env.claude
 
 # Directory layout — set these at the top so all functions can reference them
-_LCP_DIR="$HOME/Sriinnu/Personal/llama-cpp-setup"  # Change this to wherever you cloned the repo
-_LCP_LIB_DIR="${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}"
+# Allow callers to override _LCP_DIR, otherwise default to the directory containing
+# this sourced config file so the setup is portable across machines.
+_LCP_CONFIG_DIR="${${(%):-%N}:A:h}"
+_LCP_DIR="${_LCP_DIR:-$_LCP_CONFIG_DIR}"
+_LCP_LIB_DIR="${_LCP_LIB_DIR:-${_LCP_DIR}/lib}"
 
 # Internal: source-time preflight checks
 # Warns once at load if key dependencies or config are missing.
@@ -47,9 +50,35 @@ _lcp_log_session() {
   local provider="$1" model="$2" base_url="$3" exit_code="$4" duration="$5"
   local ts
   ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  # Append one JSONL line — safe to run concurrently (O_APPEND writes are atomic < PIPE_BUF)
-  printf '{"ts":"%s","provider":"%s","model":"%s","base_url":"%s","exit":%s,"duration_s":%s}\n' \
-    "$ts" "$provider" "$model" "$base_url" "$exit_code" "$duration" >> "$_LCP_SESSION_LOG" 2>/dev/null
+  # Append one JSONL line using a real JSON encoder so user-provided values are escaped safely.
+  # Keep numeric fields as JSON numbers when possible; otherwise emit null to preserve valid JSON.
+  python3 - "$ts" "$provider" "$model" "$base_url" "$exit_code" "$duration" >> "$_LCP_SESSION_LOG" 2>/dev/null <<'PY'
+import json
+import sys
+
+ts, provider, model, base_url, exit_code, duration = sys.argv[1:7]
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def parse_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+print(json.dumps({
+    "ts": ts,
+    "provider": provider,
+    "model": model,
+    "base_url": base_url,
+    "exit": parse_int(exit_code),
+    "duration_s": parse_float(duration),
+}, separators=(",", ":")))
+PY
 }
 
 # Internal: pre-launch health check for a provider
@@ -63,8 +92,8 @@ _lcp_health_check() {
   fi
 
   # Only OpenRouter exposes a reliable OpenAI-style /v1/models route. zai/minimax/
-  # deepseek are Anthropic-proxy endpoints that don't serve /v1/models — probing it
-  # there 404s and throws a false "unreachable" warning on every launch, so skip them.
+  # deepseek/vercel are Anthropic-proxy endpoints that don't serve /v1/models — probing
+  # it there 404s and throws a false "unreachable" warning on every launch, so skip them.
   if [[ "$base_url" != *"openrouter"* ]]; then
     return 0
   fi
@@ -84,27 +113,41 @@ _lcp_health_check() {
 }
 
 # Internal: unified launcher for any Claude Code provider
-# Usage: _launch_claude <base_url> <auth_token> <opus_model> <sonnet_model> <haiku_model> [--arg ...]
+# Usage: _launch_claude <base_url> <auth_token> <opus_model> <sonnet_model> <haiku_model> [provider_id] [--arg ...]
 # Passing the same model for all three roles is equivalent to single-model mode.
+# Use provider_id for logging/health checks when multiple logical providers share the same base URL
+# (for example: openrouter-free vs openrouter-paid).
 _launch_claude() {
   local base_url="$1" auth_token="$2"
   local opus_model="$3" sonnet_model="$4" haiku_model="$5"
   shift 5
 
+  # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
+  local provider=""
+  case "${1:-}" in
+    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter)
+      provider="$1"
+      shift
+      ;;
+  esac
+
   # Ensure run directory exists
   mkdir -p "$(dirname "$_LCP_SESSION_LOG")"
 
-  # Derive provider name from base_url for logging/display
-  local provider="unknown"
-  case "$base_url" in
-    *z.ai*)              provider="zai" ;;
-    *minimax*)           provider="minimax" ;;
-    *deepseek*)          provider="deepseek" ;;
-    *openrouter*)        provider="openrouter" ;;
-    *ai-gateway.vercel*) provider="vercel" ;;
-    *localhost*)         provider="lcp-local" ;;
-    *127.0.0.1*)         provider="lcp-local" ;;
-  esac
+  # Fall back to deriving provider name from base_url for backward compatibility.
+  # Prefer provider IDs that align with downstream session selection logic.
+  if [[ -z "$provider" ]]; then
+    provider="unknown"
+    case "$base_url" in
+      *z.ai*)              provider="zai" ;;
+      *minimax*)           provider="minimax" ;;
+      *deepseek*)          provider="deepseek" ;;
+      *openrouter*)        provider="openrouter-free" ;;
+      *ai-gateway.vercel*) provider="vercel" ;;
+      *localhost*)         provider="lcp-local" ;;
+      *127.0.0.1*)         provider="lcp-local" ;;
+    esac
+  fi
 
   # Pre-launch health check (non-blocking — just warn)
   _lcp_health_check "$base_url" "$opus_model" "$provider" || true
@@ -886,7 +929,9 @@ hf() {
   # Now launch with lcp, passing through any tuning flags
   echo ""
   echo "Model downloaded. Launching..."
-  lcp "$picked_file" "${lcp_args[@]}"
+  # lcp parses flags first then breaks on the first positional (the model), so the
+  # tuning flags (e.g. --ctx) must come BEFORE the filename or they'd never be consumed.
+  lcp "${lcp_args[@]}" "$picked_file"
 }
 
 # ==============================================================================
@@ -908,10 +953,22 @@ llp-stats() {
 llp-history() {
   [ -f "$_LCP_SESSION_LOG" ] || { echo "No session log found."; return 1; }
   local n="${1:-10}"
+  # sessions.jsonl is one JSON object per line — json.tool chokes on multi-line input,
+  # so decode line by line and pretty-print each entry separately.
+  local _pretty_jsonl='import json, sys
+first = True
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    if not first:
+        print()
+    print(json.dumps(json.loads(line), indent=2, ensure_ascii=False))
+    first = False'
   if [[ "$n" == "all" ]]; then
-    cat "$_LCP_SESSION_LOG" | python3 -m json.tool --no-ensure-ascii 2>/dev/null
+    cat "$_LCP_SESSION_LOG" | python3 -c "$_pretty_jsonl"
   else
-    tail -n "$n" "$_LCP_SESSION_LOG" | python3 -m json.tool --no-ensure-ascii 2>/dev/null
+    tail -n "$n" "$_LCP_SESSION_LOG" | python3 -c "$_pretty_jsonl"
   fi
 }
 
