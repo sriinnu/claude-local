@@ -37,7 +37,7 @@ unset _lcp_preflight  # clean up — only needed at source time
 
 # Internal: known provider API keys to scrub from subshell environments
 # Prevents cross-provider credential leakage (e.g., ZAI key visible to OpenRouter)
-_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY OPENROUTER_API_KEY ANTHROPIC_API_KEY)
+_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY ANTHROPIC_API_KEY)
 
 # Internal: observability — session log location
 _LCP_SESSION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/lcp/sessions.jsonl"
@@ -62,17 +62,22 @@ _lcp_health_check() {
     return 0
   fi
 
-  # Quick ping to the base URL
+  # Only OpenRouter exposes a reliable OpenAI-style /v1/models route. zai/minimax/
+  # deepseek are Anthropic-proxy endpoints that don't serve /v1/models — probing it
+  # there 404s and throws a false "unreachable" warning on every launch, so skip them.
+  if [[ "$base_url" != *"openrouter"* ]]; then
+    return 0
+  fi
+
+  # Quick ping to the models endpoint
   if ! curl -sf -m 5 "$base_url/v1/models" &>/dev/null; then
     echo "⚠ $provider endpoint unreachable: $base_url"
     echo "  Check your API key and network connectivity."
-    # For OpenRouter, check specific model availability via the models list
-    if [[ "$base_url" == *"openrouter"* ]]; then
-      local check
-      check=$(python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/provider_health.py" \
-        --model "$model" --models-url "https://openrouter.ai/api/v1/models" 2>/dev/null)
-      [[ -n "$check" ]] && echo "$check"
-    fi
+    # Check specific model availability via the models list
+    local check
+    check=$(python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/provider_health.py" \
+      --model "$model" --models-url "https://openrouter.ai/api/v1/models" 2>/dev/null)
+    [[ -n "$check" ]] && echo "$check"
     return 1
   fi
   return 0
@@ -92,11 +97,13 @@ _launch_claude() {
   # Derive provider name from base_url for logging/display
   local provider="unknown"
   case "$base_url" in
-    *z.ai*)          provider="zai" ;;
-    *minimax*)       provider="minimax" ;;
-    *openrouter*)    provider="openrouter" ;;
-    *localhost*)     provider="lcp-local" ;;
-    *127.0.0.1*)     provider="lcp-local" ;;
+    *z.ai*)              provider="zai" ;;
+    *minimax*)           provider="minimax" ;;
+    *deepseek*)          provider="deepseek" ;;
+    *openrouter*)        provider="openrouter" ;;
+    *ai-gateway.vercel*) provider="vercel" ;;
+    *localhost*)         provider="lcp-local" ;;
+    *127.0.0.1*)         provider="lcp-local" ;;
   esac
 
   # Pre-launch health check (non-blocking — just warn)
@@ -153,9 +160,9 @@ zai() {
   _launch_claude \
     "https://api.z.ai/api/anthropic" \
     "$ZAI_API_KEY" \
-    "glm-5" \
-    "glm-5" \
-    "glm-4.5-air" \
+    "glm-5.1" \
+    "glm-5.1" \
+    "glm-4.7-air" \
     "$@"
 }
 
@@ -170,6 +177,17 @@ minimax() {
     "$@"
 }
 
+# DeepSeek - V4 era. opus=pro (big), sonnet=chat (mid), haiku=flash (fast).
+deepseek() {
+  _launch_claude \
+    "https://api.deepseek.com/anthropic" \
+    "$DEEPSEEK_API_KEY" \
+    "deepseek-v4-pro" \
+    "deepseek-chat" \
+    "deepseek-v4-flash" \
+    "$@"
+}
+
 # OpenRouter - paid models (Claude, etc.)
 openrouter() {
   _launch_claude \
@@ -181,6 +199,55 @@ openrouter() {
     "$@"
 }
 
+# Vercel AI Gateway - Anthropic-native gateway to 280+ models across providers.
+# Slugs are creator/model (anthropic/claude-opus-4.8, openai/gpt-5, google/gemini-...).
+# Browse live models + pricing with `vai-models`. Key: AI_GATEWAY_API_KEY in ~/.env.claude.
+vai() {
+  _launch_claude \
+    "https://ai-gateway.vercel.sh" \
+    "$AI_GATEWAY_API_KEY" \
+    "anthropic/claude-opus-4.8" \
+    "anthropic/claude-sonnet-4.6" \
+    "anthropic/claude-haiku-4.5" \
+    "$@"
+}
+
+# OpenRouter cheap-but-good launchers (paid, but pennies — won't queue like free tier).
+# Verify live pricing anytime with `or-models --cheap`.
+
+# GLM 4.7 Flash — ~$0.06/$0.40 per M, 203k ctx. Daily-driver value pick.
+glmflash() {
+  _launch_claude \
+    "https://openrouter.ai/api" \
+    "$OPENROUTER_API_KEY" \
+    "z-ai/glm-4.7-flash" \
+    "z-ai/glm-4.7-flash" \
+    "z-ai/glm-4.7-flash" \
+    "$@"
+}
+
+# Qwen3.5 Flash — ~$0.065/$0.26 per M, 1M ctx. Cheapest output, huge context.
+qwenflash() {
+  _launch_claude \
+    "https://openrouter.ai/api" \
+    "$OPENROUTER_API_KEY" \
+    "qwen/qwen3.5-flash-02-23" \
+    "qwen/qwen3.5-flash-02-23" \
+    "qwen/qwen3.5-flash-02-23" \
+    "$@"
+}
+
+# Gemini 3.1 Flash Lite — ~$0.25/$1.50 per M, 1M ctx. Budget-frontier when you need more brain.
+geminiflash() {
+  _launch_claude \
+    "https://openrouter.ai/api" \
+    "$OPENROUTER_API_KEY" \
+    "google/gemini-3.1-flash-lite-preview" \
+    "google/gemini-3.1-flash-lite-preview" \
+    "google/gemini-3.1-flash-lite-preview" \
+    "$@"
+}
+
 # === OpenRouter FREE models ===
 # Dynamic picker: run `orf` to pick interactively, or `orf <model-id>` to use directly
 # Examples:
@@ -188,34 +255,35 @@ openrouter() {
 #   orf qwen/qwen3-coder:free             # use directly
 #   orf qwen/qwen3-coder:free -p "hi"     # pass extra claude args
 
-# Free model registry (updated 2026-04-03)
+# Free model registry (updated 2026-06-05)
 _OR_FREE_MODELS=(
-  "arcee-ai/trinity-large-preview:free        | Arcee Trinity Large     | ctx:131k"
-  "arcee-ai/trinity-mini:free                 | Arcee Trinity Mini      | ctx:131k"
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free | Venice Uncensored | ctx:32k"
-  "google/gemma-3-12b-it:free                 | Gemma 3 12B             | ctx:32k"
-  "google/gemma-3-27b-it:free                 | Gemma 3 27B             | ctx:131k"
-  "google/gemma-3-4b-it:free                  | Gemma 3 4B              | ctx:32k"
-  "google/gemma-3n-e2b-it:free                | Gemma 3n 2B             | ctx:8k"
-  "google/gemma-3n-e4b-it:free                | Gemma 3n 4B             | ctx:8k"
-  "liquid/lfm-2.5-1.2b-instruct:free          | LiquidAI 1.2B Instruct  | ctx:32k"
-  "liquid/lfm-2.5-1.2b-thinking:free          | LiquidAI 1.2B Thinking  | ctx:32k"
-  "meta-llama/llama-3.2-3b-instruct:free      | Llama 3.2 3B            | ctx:131k"
-  "meta-llama/llama-3.3-70b-instruct:free     | Llama 3.3 70B           | ctx:65k"
-  "minimax/minimax-m2.5:free                  | MiniMax M2.5            | ctx:196k"
-  "nousresearch/hermes-3-llama-3.1-405b:free  | Hermes 3 405B           | ctx:131k"
-  "nvidia/nemotron-3-nano-30b-a3b:free        | Nemotron 3 Nano 30B     | ctx:256k"
-  "nvidia/nemotron-3-super-120b-a12b:free     | Nemotron 3 Super 120B   | ctx:262k"
-  "nvidia/nemotron-nano-12b-v2-vl:free        | Nemotron Nano 12B VL    | ctx:128k"
-  "nvidia/nemotron-nano-9b-v2:free            | Nemotron Nano 9B V2     | ctx:128k"
-  "openai/gpt-oss-120b:free                   | GPT-OSS 120B            | ctx:131k"
-  "openai/gpt-oss-20b:free                    | GPT-OSS 20B             | ctx:131k"
-  "openrouter/free                            | Free Models Router      | ctx:200k"
-  "qwen/qwen3-coder:free                      | Qwen3 Coder 480B        | ctx:262k"
-  "qwen/qwen3-next-80b-a3b-instruct:free      | Qwen3 Next 80B          | ctx:262k"
-  "qwen/qwen3.6-plus:free                     | Qwen3.6 Plus            | ctx:1M"
-  "stepfun/step-3.5-flash:free                | Step 3.5 Flash          | ctx:256k"
-  "z-ai/glm-4.5-air:free                      | GLM 4.5 Air             | ctx:131k"
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free | Venice: Uncensored (free) | ctx:32k"
+  "google/gemma-4-26b-a4b-it:free                     | Google: Gemma 4 26B A4B  (free) | ctx:262k"
+  "google/gemma-4-31b-it:free                         | Google: Gemma 4 31B (free) | ctx:262k"
+  "google/lyria-3-clip-preview                        | Google: Lyria 3 Clip Preview | ctx:1M"
+  "google/lyria-3-pro-preview                         | Google: Lyria 3 Pro Preview | ctx:1M"
+  "liquid/lfm-2.5-1.2b-instruct:free                  | LiquidAI: LFM2.5-1.2B-Instruct (free) | ctx:32k"
+  "liquid/lfm-2.5-1.2b-thinking:free                  | LiquidAI: LFM2.5-1.2B-Thinking (free) | ctx:32k"
+  "meta-llama/llama-3.2-3b-instruct:free              | Meta: Llama 3.2 3B Instruct (free) | ctx:131k"
+  "meta-llama/llama-3.3-70b-instruct:free             | Meta: Llama 3.3 70B Instruct (free) | ctx:131k"
+  "moonshotai/kimi-k2.6:free                          | MoonshotAI: Kimi K2.6 (free) | ctx:262k"
+  "nousresearch/hermes-3-llama-3.1-405b:free          | Nous: Hermes 3 405B Instruct (free) | ctx:131k"
+  "nvidia/nemotron-3-nano-30b-a3b:free                | NVIDIA: Nemotron 3 Nano 30B A3B (free) | ctx:256k"
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | NVIDIA: Nemotron 3 Nano Omni (free) | ctx:256k"
+  "nvidia/nemotron-3-super-120b-a12b:free             | NVIDIA: Nemotron 3 Super (free) | ctx:1M"
+  "nvidia/nemotron-3-ultra-550b-a55b:free             | NVIDIA: Nemotron 3 Ultra (free) | ctx:1M"
+  "nvidia/nemotron-3.5-content-safety:free            | NVIDIA: Nemotron 3.5 Content Safety (free) | ctx:128k"
+  "nvidia/nemotron-nano-12b-v2-vl:free                | NVIDIA: Nemotron Nano 12B 2 VL (free) | ctx:128k"
+  "nvidia/nemotron-nano-9b-v2:free                    | NVIDIA: Nemotron Nano 9B V2 (free) | ctx:128k"
+  "openai/gpt-oss-120b:free                           | OpenAI: gpt-oss-120b (free) | ctx:131k"
+  "openai/gpt-oss-20b:free                            | OpenAI: gpt-oss-20b (free) | ctx:131k"
+  "openrouter/free                                    | Free Models Router        | ctx:200k"
+  "openrouter/owl-alpha                               | Owl Alpha                 | ctx:1M"
+  "poolside/laguna-m.1:free                           | Poolside: Laguna M.1 (free) | ctx:262k"
+  "poolside/laguna-xs.2:free                          | Poolside: Laguna XS.2 (free) | ctx:262k"
+  "qwen/qwen3-coder:free                              | Qwen: Qwen3 Coder 480B A35B (free) | ctx:1M"
+  "qwen/qwen3-next-80b-a3b-instruct:free              | Qwen: Qwen3 Next 80B A3B Instruct (free) | ctx:262k"
+  "z-ai/glm-4.5-air:free                              | Z.ai: GLM 4.5 Air (free)  | ctx:131k"
 )
 
 orf() {
@@ -254,10 +322,38 @@ orf() {
   _launch_claude "https://openrouter.ai/api" "$OPENROUTER_API_KEY" "$model" "$model" "$model" "$@"
 }
 
-# Refresh free models list from OpenRouter API
+# Refresh free models list from OpenRouter API (edits claude_config.zsh in place)
+# Pass --dry-run to just print the block without touching the file.
 orf-update() {
+  local script="${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/or_free_update.py"
+  local config="${_LCP_DIR}/claude_config.zsh"
   echo "Fetching free models from OpenRouter..."
-  curl -sf "https://openrouter.ai/api/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/or_free_update.py"
+
+  # Dry run: just print the block, touch nothing.
+  if [[ "$1" == "--dry-run" ]]; then
+    curl -sf "https://openrouter.ai/api/v1/models" | python3 "$script"
+    return
+  fi
+
+  if [[ ! -f "$config" ]]; then
+    echo "✗ Config not found at $config — set _LCP_DIR to your repo path." >&2
+    return 1
+  fi
+
+  curl -sf "https://openrouter.ai/api/v1/models" | python3 "$script" --config "$config"
+  # zsh $pipestatus: exit code of each pipe stage. Stage 1 = curl, stage 2 = python.
+  if (( pipestatus[1] != 0 )); then
+    echo "✗ Couldn't reach OpenRouter (curl failed) — check your network/API and retry. Config untouched." >&2
+    return 1
+  fi
+  if (( pipestatus[2] != 0 )); then
+    echo "✗ Update failed — config left untouched." >&2
+    return 1
+  fi
+
+  # The gotcha: editing the file doesn't update THIS shell's in-memory model
+  # list. Re-source so `orf` shows the new models immediately — no manual step.
+  source "$config" && echo "↻ Reloaded — run 'orf' and the new models are there."
 }
 
 # === OpenRouter model browser with live pricing ===
@@ -329,6 +425,70 @@ or-models() {
   fi
 }
 
+# === Vercel AI Gateway model browser with live pricing ===
+# Browse, search, and filter all Vercel AI Gateway models (no API key needed to list).
+# Usage:
+#   vai-models                    # list all models (piped to less)
+#   vai-models claude-opus        # search
+#   vai-models --free             # free models only
+#   vai-models --cheap            # sort by cheapest first
+#   vai-models --max-tokens       # sort by provider max output tokens
+#   vai-models claude --use       # search + pick one to launch with Claude Code
+vai-models() {
+  local search="" filter="all" sort_by="name" use_model=false all_types=false claude_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --free)   filter="free"; shift ;;
+      --paid)   filter="paid"; shift ;;
+      --cheap)  sort_by="cheap"; shift ;;
+      --max-tokens) sort_by="max_tokens"; shift ;;
+      --all-types) all_types=true; shift ;;
+      --use)    use_model=true; shift ;;
+      --help)
+        echo "vai-models — Browse all Vercel AI Gateway models with live pricing"
+        echo ""
+        echo "Usage:"
+        echo "  vai-models                    List language models (default)"
+        echo "  vai-models <query>            Search by name/id"
+        echo "  vai-models --free             Free models only"
+        echo "  vai-models --paid             Paid models only"
+        echo "  vai-models --cheap            Sort by cheapest input cost"
+        echo "  vai-models --max-tokens       Sort by provider max output tokens"
+        echo "  vai-models --all-types        Include image/video/reranking models"
+        echo "  vai-models --use              Pick a model and launch Claude Code"
+        echo "  vai-models claude --use       Combine search with launch"
+        return 0
+        ;;
+      -*)     claude_args+=("$1"); shift ;;
+      *)      search="$1"; shift ;;
+    esac
+  done
+
+  local output
+  output=$(curl -sf "https://ai-gateway.vercel.sh/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/vai_models.py" \
+    --search "$search" $([[ "$filter" == "free" ]] && echo --free) $([[ "$filter" == "paid" ]] && echo --paid) \
+    $([[ "$all_types" == true ]] && echo --all-types) --sort "$sort_by" 2>&1)
+  if [[ ${#output} -eq 0 ]]; then
+    echo "Failed to fetch models from Vercel AI Gateway."
+    return 1
+  fi
+
+  if $use_model; then
+    echo "$output"
+    echo ""
+    echo -n "  Enter model ID to use (or empty to cancel): "
+    read -r picked
+    [[ -z "$picked" ]] && return 1
+    echo ""
+    echo "Launching Claude Code with $picked..."
+    _launch_claude "https://ai-gateway.vercel.sh" "$AI_GATEWAY_API_KEY" "$picked" "$picked" "$picked" "${claude_args[@]}"
+  elif command -v less &>/dev/null && [[ -t 1 ]]; then
+    echo "$output" | less -R
+  else
+    echo "$output"
+  fi
+}
+
 # === llama.cpp LOCAL inference ===
 # Full-featured local inference with Metal GPU acceleration
 # Usage:
@@ -355,11 +515,12 @@ _LCP_UBATCH_SIZE=1024      # bigger micro-batch for Metal (M3 handles this well)
 _LCP_FLASH_ATTN=1          # flash attention (faster, less memory)
 
 lcp() {
-  # Install cleanup trap — if the shell dies, crashes, or user disconnects,
-  # the background llama-server gets stopped automatically instead of orphaning.
-  # Cleared later if the user says "keep server running."
+  # Cleanup helper — stops the server THIS invocation starts and clears its pidfile.
+  # NOTE: in zsh an EXIT trap set inside a function fires on function *return*, not on
+  # shell exit. So we must NOT arm it here — doing so would kill a running server when
+  # the user merely runs `lcp --status`/`--list`/`--help`/`--pull`. We arm it further
+  # down, only after we've actually launched a server (and clear it on "keep running").
   _lcp_cleanup() { kill "$(cat "$_LCP_PIDFILE" 2>/dev/null)" 2>/dev/null; rm -f "$_LCP_PIDFILE" 2>/dev/null; }
-  trap '_lcp_cleanup' EXIT INT TERM
 
   case "${1:-}" in
     --stop)
@@ -548,6 +709,10 @@ lcp() {
     --log-disable \
     &>"$_LCP_RUNDIR/llama-server.log" &
   echo $! > "$_LCP_PIDFILE"
+
+  # Now that we own a live server, arm cleanup. zsh fires this EXIT trap when lcp
+  # returns; the "keep running?" prompt below clears it if the user opts to keep.
+  trap '_lcp_cleanup' EXIT INT TERM
 
   # Wait for server to be ready
   echo -n "Waiting for server"

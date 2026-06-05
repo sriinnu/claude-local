@@ -77,11 +77,12 @@ def main():
 
     free_count = sum(1 for m in models if m["is_free"])
     paid_count = len(models) - free_count
+    hr = "\u2500" * 90  # horizontal rule, reused below
     print(f"  Found {len(models)} models ({free_count} free, {paid_count} paid)")
-    print(f"  {'\u2500' * 90}")
+    print(f"  {hr}")
     for m in models:
         print(f"  {m['id']:<55s} {m['ctx']:>6s} ctx   {m['pricing']}")
-    print(f"  {'\u2500' * 90}")
+    print(f"  {hr}")
     print(f"  Total: {len(models)} models")
 
 
