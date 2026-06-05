@@ -438,7 +438,10 @@ or-models() {
         echo "  or-models qwen --use          Search qwen, pick one, launch"
         return 0
         ;;
-      -*)     claude_args+=("$1"); shift ;;
+      # First unrecognized flag = start of Claude args. Grab the rest verbatim so
+      # value-taking flags survive (e.g. `--use -p "hi"` keeps "hi" with -p instead
+      # of stealing it as the search term).
+      -*)     claude_args+=("$@"); break ;;
       *)      search="$1"; shift ;;
     esac
   done
@@ -502,7 +505,10 @@ vai-models() {
         echo "  vai-models claude --use       Combine search with launch"
         return 0
         ;;
-      -*)     claude_args+=("$1"); shift ;;
+      # First unrecognized flag = start of Claude args. Grab the rest verbatim so
+      # value-taking flags survive (e.g. `--use -p "hi"` keeps "hi" with -p instead
+      # of stealing it as the search term).
+      -*)     claude_args+=("$@"); break ;;
       *)      search="$1"; shift ;;
     esac
   done
