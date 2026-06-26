@@ -2,6 +2,19 @@
 # Load API keys
 [ -f ~/.env.claude ] && source ~/.env.claude
 
+# === PROVIDER ENDPOINTS ===
+# Defaults live here; override ANY of them from ~/.env.claude with a single line, e.g.
+#   export KIMI_BASE_URL="https://api.moonshot.ai/anthropic"   # flip Kimi to the intl host
+# The `:=` only sets a value if you haven't already — so ~/.env.claude (sourced just above)
+# always wins. No need to edit the launcher functions to retarget an endpoint.
+: ${ZAI_BASE_URL:=https://api.z.ai/api/anthropic}
+: ${KIMI_BASE_URL:=https://api.moonshot.cn/anthropic}
+: ${MINIMAX_BASE_URL:=https://api.minimax.io/anthropic}
+: ${DEEPSEEK_BASE_URL:=https://api.deepseek.com/anthropic}
+: ${OPENROUTER_BASE_URL:=https://openrouter.ai/api}
+: ${VAI_BASE_URL:=https://ai-gateway.vercel.sh}
+: ${SILICONFLOW_BASE_URL:=https://api.siliconflow.cn/v1}
+
 # Directory layout — set these at the top so all functions can reference them
 # Allow callers to override _LCP_DIR, otherwise default to the directory containing
 # this sourced config file so the setup is portable across machines.
@@ -40,7 +53,7 @@ unset _lcp_preflight  # clean up — only needed at source time
 
 # Internal: known provider API keys to scrub from subshell environments
 # Prevents cross-provider credential leakage (e.g., ZAI key visible to OpenRouter)
-_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY KIMI_API_KEY ANTHROPIC_API_KEY)
+_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY KIMI_API_KEY SILICONFLOW_API_KEY ANTHROPIC_API_KEY)
 
 # Internal: observability — session log location
 _LCP_SESSION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/lcp/sessions.jsonl"
@@ -105,7 +118,7 @@ _lcp_health_check() {
     # Check specific model availability via the models list
     local check
     check=$(python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/provider_health.py" \
-      --model "$model" --models-url "https://openrouter.ai/api/v1/models" 2>/dev/null)
+      --model "$model" --models-url "$OPENROUTER_BASE_URL/v1/models" 2>/dev/null)
     [[ -n "$check" ]] && echo "$check"
     return 1
   fi
@@ -125,7 +138,7 @@ _launch_claude() {
   # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
   local provider=""
   case "${1:-}" in
-    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter)
+    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi)
       provider="$1"
       shift
       ;;
@@ -202,7 +215,7 @@ _launch_claude() {
 # GLM (Z.AI) - Cost-effective option
 zai() {
   _launch_claude \
-    "https://api.z.ai/api/anthropic" \
+    "$ZAI_BASE_URL" \
     "$ZAI_API_KEY" \
     "glm-5.2" \
     "glm-5.2" \
@@ -213,7 +226,7 @@ zai() {
 # MiniMax - Experimental
 minimax() {
   _launch_claude \
-    "https://api.minimax.io/anthropic" \
+    "$MINIMAX_BASE_URL" \
     "$MINIMAX_API_KEY" \
     "MiniMax-M3" \
     "MiniMax-M3" \
@@ -225,7 +238,7 @@ minimax() {
 # Note: deepseek-chat alias was retired; API now serves only v4-pro and v4-flash.
 deepseek() {
   _launch_claude \
-    "https://api.deepseek.com/anthropic" \
+    "$DEEPSEEK_BASE_URL" \
     "$DEEPSEEK_API_KEY" \
     "deepseek-v4-pro" \
     "deepseek-v4-pro" \
@@ -242,7 +255,7 @@ deepseek() {
 # ever see that, turn thinking on in Claude Code; it's not an endpoint/key problem.
 kimi() {
   _launch_claude \
-    "https://api.moonshot.cn/anthropic" \
+    "$KIMI_BASE_URL" \
     "$KIMI_API_KEY" \
     "kimi-k2.7-code" \
     "kimi-k2.7-code" \
@@ -253,7 +266,7 @@ kimi() {
 # OpenRouter - paid models (Claude, etc.)
 openrouter() {
   _launch_claude \
-    "https://openrouter.ai/api" \
+    "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
     "anthropic/claude-opus-4.8" \
     "anthropic/claude-sonnet-4.6" \
@@ -266,7 +279,7 @@ openrouter() {
 # calls (titles, summaries) don't bill at $50/M output.
 fable() {
   _launch_claude \
-    "https://openrouter.ai/api" \
+    "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
     "anthropic/claude-fable-5" \
     "anthropic/claude-fable-5" \
@@ -279,12 +292,94 @@ fable() {
 # Browse live models + pricing with `vai-models`. Key: AI_GATEWAY_API_KEY in ~/.env.claude.
 vai() {
   _launch_claude \
-    "https://ai-gateway.vercel.sh" \
+    "$VAI_BASE_URL" \
     "$AI_GATEWAY_API_KEY" \
     "anthropic/claude-opus-4.8" \
     "anthropic/claude-sonnet-4.6" \
     "anthropic/claude-haiku-4.5" \
     "$@"
+}
+
+# === SiliconFlow — OpenAI-only, bridged to Claude Code via a local LiteLLM proxy ===
+# ⚠ WIP / NOT WORKING YET: litellm's /v1/messages bridge calls SiliconFlow's /v1/responses
+#   (OpenAI Responses API), which SiliconFlow doesn't serve -> 404. Needs the bridge forced
+#   to /chat/completions (likely via claude-code-router instead of litellm). Don't rely on
+#   this until fixed. Scaffolding + endpoint var are kept so it's a quick finish later.
+# SiliconFlow speaks ONLY the OpenAI API (no /anthropic endpoint), so Claude Code can't
+# hit it directly. This boots a local LiteLLM proxy that translates Anthropic /v1/messages
+# -> SiliconFlow's OpenAI /chat/completions, points Claude Code at localhost, and tears the
+# proxy down on exit. Same local-server lifecycle as lcp.
+#
+# Usage:
+#   siliconflow                                      # default model (_SF_DEFAULT_MODEL)
+#   siliconflow deepseek-ai/DeepSeek-V3              # any SiliconFlow slug
+#   siliconflow Qwen/Qwen3-Coder-... -p "hi"         # extra args pass through to claude
+# Exact slugs (the model arg must match SiliconFlow exactly):
+#   curl -s https://api.siliconflow.cn/v1/models -H "Authorization: Bearer $SILICONFLOW_API_KEY"
+# Deps: uv tool install 'litellm[proxy]' --python 3.12  (3.14 fails — PyO3 cap)
+_SF_PORT=8777
+_SF_DEFAULT_MODEL="deepseek-ai/DeepSeek-V3"   # change here, or pass a slug as the first arg
+_SF_RUNDIR="${XDG_CACHE_HOME:-$HOME/.cache}/lcp"
+_SF_PIDFILE="$_SF_RUNDIR/siliconflow-litellm.pid"
+_SF_CONFIG="$_SF_RUNDIR/siliconflow-litellm.yaml"
+_SF_LOG="$_SF_RUNDIR/siliconflow-litellm.log"
+
+siliconflow() {
+  if [[ -z "$SILICONFLOW_API_KEY" ]]; then
+    echo "✗ SILICONFLOW_API_KEY not set — add it to ~/.env.claude" >&2
+    return 1
+  fi
+  if ! command -v litellm &>/dev/null; then
+    echo "✗ litellm not found. Install: uv tool install 'litellm[proxy]' --python 3.12" >&2
+    return 1
+  fi
+
+  # First non-flag arg is the model slug; everything after passes through to claude.
+  local model="$_SF_DEFAULT_MODEL"
+  if [[ -n "${1:-}" && "$1" != -* ]]; then
+    model="$1"; shift
+  fi
+
+  mkdir -p "$_SF_RUNDIR"
+
+  # Wildcard route: Claude Code asks for "<slug>", LiteLLM forwards to openai/<slug> at
+  # SiliconFlow — so any slug works with no per-model config. drop_params tolerates
+  # Anthropic-only params the OpenAI backend doesn't accept.
+  cat > "$_SF_CONFIG" <<YAML
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "openai/*"
+      api_base: "$SILICONFLOW_BASE_URL"
+      api_key: "os.environ/SILICONFLOW_API_KEY"
+litellm_settings:
+  drop_params: true
+YAML
+
+  # Stop any stale proxy we left running
+  if [[ -f "$_SF_PIDFILE" ]] && kill -0 "$(cat "$_SF_PIDFILE")" 2>/dev/null; then
+    kill "$(cat "$_SF_PIDFILE")" 2>/dev/null; sleep 1
+  fi
+
+  echo "→ starting LiteLLM proxy (SiliconFlow) on :$_SF_PORT — model: $model"
+  litellm --config "$_SF_CONFIG" --host 127.0.0.1 --port "$_SF_PORT" &>"$_SF_LOG" &
+  echo $! > "$_SF_PIDFILE"
+
+  # Tear the proxy down when this function returns or is interrupted
+  _sf_cleanup() { kill "$(cat "$_SF_PIDFILE" 2>/dev/null)" 2>/dev/null; rm -f "$_SF_PIDFILE" 2>/dev/null; }
+  trap '_sf_cleanup' EXIT INT TERM
+
+  echo -n "  waiting for proxy"
+  local n=0
+  while ! curl -sf "http://127.0.0.1:$_SF_PORT/health/liveliness" &>/dev/null; do
+    echo -n "."; sleep 1; n=$((n+1))
+    [[ $n -gt 60 ]] && { echo " TIMEOUT — check $_SF_LOG"; return 1; }
+  done
+  echo " ready!"; echo ""
+
+  # Claude Code talks Anthropic to the local proxy. Auth token is a dummy — the proxy is
+  # open on localhost (no master key). Model name handed to claude = the SiliconFlow slug.
+  _launch_claude "http://127.0.0.1:$_SF_PORT" "sf-local" "$model" "$model" "$model" siliconflow "$@"
 }
 
 # OpenRouter cheap-but-good launchers (paid, but pennies — won't queue like free tier).
@@ -293,7 +388,7 @@ vai() {
 # GLM 4.7 Flash — ~$0.06/$0.40 per M, 203k ctx. Daily-driver value pick.
 glmflash() {
   _launch_claude \
-    "https://openrouter.ai/api" \
+    "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
     "z-ai/glm-4.7-flash" \
     "z-ai/glm-4.7-flash" \
@@ -304,7 +399,7 @@ glmflash() {
 # Qwen3.5 Flash — ~$0.065/$0.26 per M, 1M ctx. Cheapest output, huge context.
 qwenflash() {
   _launch_claude \
-    "https://openrouter.ai/api" \
+    "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
     "qwen/qwen3.5-flash-02-23" \
     "qwen/qwen3.5-flash-02-23" \
@@ -316,7 +411,7 @@ qwenflash() {
 # (preview graduated to GA; same pricing. Newer non-lite google/gemini-3.5-flash exists at ~6x cost.)
 geminiflash() {
   _launch_claude \
-    "https://openrouter.ai/api" \
+    "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
     "google/gemini-3.1-flash-lite" \
     "google/gemini-3.1-flash-lite" \
@@ -395,7 +490,7 @@ orf() {
   fi
 
   echo "Using model: $model"
-  _launch_claude "https://openrouter.ai/api" "$OPENROUTER_API_KEY" "$model" "$model" "$model" "$@"
+  _launch_claude "$OPENROUTER_BASE_URL" "$OPENROUTER_API_KEY" "$model" "$model" "$model" "$@"
 }
 
 # Refresh free models list from OpenRouter API (edits claude_config.zsh in place)
@@ -407,7 +502,7 @@ orf-update() {
 
   # Dry run: just print the block, touch nothing.
   if [[ "$1" == "--dry-run" ]]; then
-    curl -sf "https://openrouter.ai/api/v1/models" | python3 "$script"
+    curl -sf "$OPENROUTER_BASE_URL/v1/models" | python3 "$script"
     return
   fi
 
@@ -416,7 +511,7 @@ orf-update() {
     return 1
   fi
 
-  curl -sf "https://openrouter.ai/api/v1/models" | python3 "$script" --config "$config"
+  curl -sf "$OPENROUTER_BASE_URL/v1/models" | python3 "$script" --config "$config"
   # zsh $pipestatus: exit code of each pipe stage. Stage 1 = curl, stage 2 = python.
   if (( pipestatus[1] != 0 )); then
     echo "✗ Couldn't reach OpenRouter (curl failed) — check your network/API and retry. Config untouched." >&2
@@ -480,7 +575,7 @@ or-models() {
   done
 
   local output
-  output=$(curl -sf "https://openrouter.ai/api/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/or_models.py" \
+  output=$(curl -sf "$OPENROUTER_BASE_URL/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/or_models.py" \
     --search "$search" $([[ "$filter" == "free" ]] && echo --free) $([[ "$filter" == "paid" ]] && echo --paid) \
     --sort "$sort_by" 2>&1)
   if [[ ${#output} -eq 0 ]]; then
@@ -496,7 +591,7 @@ or-models() {
     [[ -z "$picked" ]] && return 1
     echo ""
     echo "Launching Claude Code with $picked..."
-    _launch_claude "https://openrouter.ai/api" "$OPENROUTER_API_KEY" "$picked" "$picked" "$picked" "${claude_args[@]}"
+    _launch_claude "$OPENROUTER_BASE_URL" "$OPENROUTER_API_KEY" "$picked" "$picked" "$picked" "${claude_args[@]}"
   elif command -v less &>/dev/null && [[ -t 1 ]]; then
     echo "$output" | less -R
   else
@@ -547,7 +642,7 @@ vai-models() {
   done
 
   local output
-  output=$(curl -sf "https://ai-gateway.vercel.sh/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/vai_models.py" \
+  output=$(curl -sf "$VAI_BASE_URL/v1/models" | python3 "${_LCP_LIB_DIR:-${_LCP_DIR:-.}/lib}/vai_models.py" \
     --search "$search" $([[ "$filter" == "free" ]] && echo --free) $([[ "$filter" == "paid" ]] && echo --paid) \
     $([[ "$all_types" == true ]] && echo --all-types) --sort "$sort_by" 2>&1)
   if [[ ${#output} -eq 0 ]]; then
@@ -563,7 +658,7 @@ vai-models() {
     [[ -z "$picked" ]] && return 1
     echo ""
     echo "Launching Claude Code with $picked..."
-    _launch_claude "https://ai-gateway.vercel.sh" "$AI_GATEWAY_API_KEY" "$picked" "$picked" "$picked" "${claude_args[@]}"
+    _launch_claude "$VAI_BASE_URL" "$AI_GATEWAY_API_KEY" "$picked" "$picked" "$picked" "${claude_args[@]}"
   elif command -v less &>/dev/null && [[ -t 1 ]]; then
     echo "$output" | less -R
   else
