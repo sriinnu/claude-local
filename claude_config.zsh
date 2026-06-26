@@ -40,7 +40,7 @@ unset _lcp_preflight  # clean up — only needed at source time
 
 # Internal: known provider API keys to scrub from subshell environments
 # Prevents cross-provider credential leakage (e.g., ZAI key visible to OpenRouter)
-_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY ANTHROPIC_API_KEY)
+_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY KIMI_API_KEY ANTHROPIC_API_KEY)
 
 # Internal: observability — session log location
 _LCP_SESSION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/lcp/sessions.jsonl"
@@ -142,6 +142,7 @@ _launch_claude() {
       *z.ai*)              provider="zai" ;;
       *minimax*)           provider="minimax" ;;
       *deepseek*)          provider="deepseek" ;;
+      *moonshot*)          provider="kimi" ;;
       *openrouter*)        provider="openrouter-free" ;;
       *ai-gateway.vercel*) provider="vercel" ;;
       *localhost*)         provider="lcp-local" ;;
@@ -203,9 +204,9 @@ zai() {
   _launch_claude \
     "https://api.z.ai/api/anthropic" \
     "$ZAI_API_KEY" \
-    "glm-5.1" \
-    "glm-5.1" \
-    "glm-4.7-air" \
+    "glm-5.2" \
+    "glm-5.2" \
+    "glm-5-turbo" \
     "$@"
 }
 
@@ -214,20 +215,38 @@ minimax() {
   _launch_claude \
     "https://api.minimax.io/anthropic" \
     "$MINIMAX_API_KEY" \
-    "MiniMax-M2.7" \
-    "MiniMax-M2.7" \
-    "MiniMax-M2.7" \
+    "MiniMax-M3" \
+    "MiniMax-M3" \
+    "MiniMax-M3" \
     "$@"
 }
 
-# DeepSeek - V4 era. opus=pro (big), sonnet=chat (mid), haiku=flash (fast).
+# DeepSeek - V4 era. opus/sonnet=pro (big), haiku=flash (fast).
+# Note: deepseek-chat alias was retired; API now serves only v4-pro and v4-flash.
 deepseek() {
   _launch_claude \
     "https://api.deepseek.com/anthropic" \
     "$DEEPSEEK_API_KEY" \
     "deepseek-v4-pro" \
-    "deepseek-chat" \
+    "deepseek-v4-pro" \
     "deepseek-v4-flash" \
+    "$@"
+}
+
+# Kimi (Moonshot AI) — K2.7 Code, Anthropic-native endpoint.
+# CONFIRMED 2026-06-26: this key is a platform.moonshot.CN key — .cn returns 200,
+# the .ai (international) host 401s on it. Must be the /anthropic path (NOT /v1, which
+# is the OpenAI-compatible route Claude Code can't speak).
+# NOTE: kimi-k2.7-code REQUIRES extended thinking. A request without it returns
+# HTTP 400 "invalid thinking: only type=enabled is allowed for this model" — if you
+# ever see that, turn thinking on in Claude Code; it's not an endpoint/key problem.
+kimi() {
+  _launch_claude \
+    "https://api.moonshot.cn/anthropic" \
+    "$KIMI_API_KEY" \
+    "kimi-k2.7-code" \
+    "kimi-k2.7-code" \
+    "kimi-k2.7-code" \
     "$@"
 }
 
@@ -236,9 +255,22 @@ openrouter() {
   _launch_claude \
     "https://openrouter.ai/api" \
     "$OPENROUTER_API_KEY" \
-    "anthropic/claude-opus-4" \
-    "anthropic/claude-sonnet-4" \
-    "anthropic/claude-haiku-3.5" \
+    "anthropic/claude-opus-4.8" \
+    "anthropic/claude-sonnet-4.6" \
+    "anthropic/claude-haiku-4.5" \
+    "$@"
+}
+
+# Fable 5 — Anthropic's creative powerhouse via OpenRouter. 1M ctx. Premium ($10/$50 per M).
+# Opus+Sonnet roles run Fable; haiku lane drops to claude-haiku-4.5 so background
+# calls (titles, summaries) don't bill at $50/M output.
+fable() {
+  _launch_claude \
+    "https://openrouter.ai/api" \
+    "$OPENROUTER_API_KEY" \
+    "anthropic/claude-fable-5" \
+    "anthropic/claude-fable-5" \
+    "anthropic/claude-haiku-4.5" \
     "$@"
 }
 
@@ -281,13 +313,14 @@ qwenflash() {
 }
 
 # Gemini 3.1 Flash Lite — ~$0.25/$1.50 per M, 1M ctx. Budget-frontier when you need more brain.
+# (preview graduated to GA; same pricing. Newer non-lite google/gemini-3.5-flash exists at ~6x cost.)
 geminiflash() {
   _launch_claude \
     "https://openrouter.ai/api" \
     "$OPENROUTER_API_KEY" \
-    "google/gemini-3.1-flash-lite-preview" \
-    "google/gemini-3.1-flash-lite-preview" \
-    "google/gemini-3.1-flash-lite-preview" \
+    "google/gemini-3.1-flash-lite" \
+    "google/gemini-3.1-flash-lite" \
+    "google/gemini-3.1-flash-lite" \
     "$@"
 }
 

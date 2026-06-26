@@ -455,13 +455,13 @@ openrouter                  # defaults to Claude
 ```
 
 Default model mapping:
-- Opus -> `anthropic/claude-opus-4`
-- Sonnet -> `anthropic/claude-sonnet-4`
-- Haiku -> `anthropic/claude-haiku-3.5`
+- Opus -> `anthropic/claude-opus-4.8`
+- Sonnet -> `anthropic/claude-sonnet-4.6`
+- Haiku -> `anthropic/claude-haiku-4.5`
 
 You can change these in `~/.claude_config.zsh`.
 
-> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `minimax`, `deepseek`, `glmflash`, `qwenflash`, `geminiflash`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi`, `minimax`, `deepseek`, `fable`, `glmflash`, `qwenflash`, `geminiflash`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
 
 ### Interactive picker — `or-models --use`
 
@@ -484,10 +484,18 @@ No config edits, no model IDs to memorize — you see live pricing, pick one, Cl
 These are also available in `~/.claude_config.zsh`:
 
 ```bash
-zai                     # Z.AI GLM models (cost-effective)
-minimax                 # MiniMax M2.7 (experimental)
-deepseek                # DeepSeek V4 (pro/chat/flash)
+zai                     # Z.AI GLM 5.2 (cost-effective)
+kimi                    # Moonshot Kimi K2.7 Code (api.moonshot.cn — see note below)
+minimax                 # MiniMax M3 (experimental)
+deepseek                # DeepSeek V4 (pro + flash)
+fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 ```
+
+> **Kimi note**: the `kimi` launcher points at `api.moonshot.cn` (the `.cn` platform) — that's
+> where the key in `~/.env.claude` is provisioned; the international `.ai` host 401s on it.
+> `kimi-k2.7-code` also requires extended thinking. If a request ever fails with
+> `400 invalid thinking: only type=enabled is allowed`, turn thinking on — it's not a key
+> or endpoint problem. Flip the host to `api.moonshot.ai` only if your key is an international one.
 
 ### Vercel AI Gateway — `vai`
 
@@ -519,76 +527,6 @@ or-models --free                   # free models only
 or-models --paid                   # paid models only
 or-models --cheap                  # sort by cheapest prompt cost
 or-models --max-tokens             # sort by context window size
-or-models --free qwen              # combine: free qwen models
-or-models gemma-4 --use            # search → pick → launch Claude Code
-or-models --help                   # all options
-```
-
-### Examples
-
-```bash
-# Find Gemma 4 variants and pricing
-$ or-models gemma-4
-  Found 2 models matching "gemma-4" (out of 348 total)
-  ──────────────────────────────────────────────────────
-  google/gemma-4-26b-a4b-it       262k ctx   $0.13/M in  $0.40/M out
-  google/gemma-4-31b-it           262k ctx   $0.14/M in  $0.40/M out
-
-# Browse cheapest paid models
-$ or-models --cheap --paid
-
-# Search and directly launch a model
-$ or-models deepseek --use
-  # shows results → type a model ID → launches Claude Code with it
-```
-
-The `--use` flag turns the browser into a launcher — search, see pricing, pick a model, and Claude Code starts with it through OpenRouter. No config edits needed.
-
-> **Tip**: Pair with `orf-update` to refresh the free models list in your shell config, or just use `or-models --free` for a live view.
-
----
-
-## Observability & Routing
-
-Every `claude` session is logged to JSONL: provider, model, exit code, duration, timestamp.
-
-```bash
-llp-which code               # "Which provider should I use for code?"
-llp-stats                     # dashboard: total sessions, error rates, avg duration
-llp-history 30                # last 30 sessions as formatted JSON
-llp-quick                     # instant launch of best free model
-llp-reset                     # clear session history
-```
-
-Data lives in `$XDG_CACHE_HOME/lcp/sessions.jsonl` (or `~/.cache/lcp/`). Concurrent-safe, append-only logging.
-
-> **How llp-which works**: It scores providers on task match, cost, privacy, and your actual error history from `sessions.jsonl`. If local crashes 30% of the time, it drops that provider. If OpenRouter free queues too often, the score reflects it.
-
----
-
-## Architecture
-
-- **`_launch_claude()`** — single choke point. All providers flow through this function for consistent env setup, provider key scrubbing, session logging, and exit code capture.
-- **Key scrubbing** — known provider API keys are `unset` in the subshell before launching claude. Prevents cross-provider credential leakage.
-- **Orphan cleanup** — EXIT/INT/TERM traps kill the local llama-server if the shell dies before launching claude.
-- **`lib/`** — extracted Python helpers for HF search, OpenRouter formatting, session stats, and provider recommendation. No embedded Python in shell code.
-- **Preflight checks** — warns at source time if `claude`, `python3`, or `curl` are missing.
-
----
-
-## Browsing All OpenRouter Models
-
-`or-models` pulls the full OpenRouter catalog (~350 models) with **live pricing** straight from the API.
-
-### Usage
-
-```bash
-or-models                          # all models (piped to less)
-or-models gemma-4                  # search by name or model ID
-or-models --free                   # free models only
-or-models --paid                   # paid models only
-or-models --cheap                  # sort by cheapest prompt cost
-or-models --top                    # sort by trending/popular
 or-models --free qwen              # combine: free qwen models
 or-models gemma-4 --use            # search → pick → launch Claude Code
 or-models --help                   # all options
