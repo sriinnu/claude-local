@@ -1,19 +1,41 @@
 # === CLAUDE CODE MULTI-PROVIDER SETUP ===
-# Load API keys
-[ -f ~/.env.claude ] && source ~/.env.claude
+
+# === API KEYS — macOS login keychain (single source of truth) ===
+# Every provider key lives in the login keychain: service name = variable name,
+# account = $USER. Nothing in plaintext on disk. Add or rotate a key:
+#   security add-generic-password -U -a "$USER" -s KIMI_US_API_KEY -w   # prompts for value
+#   security delete-generic-password -s KIMI_US_API_KEY                 # remove
+# GUI: Keychain Access app -> login keychain -> search the var name.
+# A var already exported in the environment wins — keychain only fills what's unset.
+_LCP_KEYCHAIN_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY \
+  AI_GATEWAY_API_KEY KIMI_API_KEY KIMI_US_API_KEY GEMINI_API_KEY SILICONFLOW_API_KEY \
+  BIGMODEL_API_KEY HUGGING_FACE_API_KEY OLLAMA_API_KEY QWEN_API_KEY)
+_lcp_load_keys() {
+  local var val
+  for var in "${_LCP_KEYCHAIN_KEYS[@]}"; do
+    [[ -n "${(P)var}" ]] && continue
+    val=$(security find-generic-password -s "$var" -w 2>/dev/null) || continue
+    [[ -n "$val" ]] && export "$var=$val"
+  done
+}
+_lcp_load_keys
+unset -f _lcp_load_keys
 
 # === PROVIDER ENDPOINTS ===
-# Defaults live here; override ANY of them from ~/.env.claude with a single line, e.g.
+# Defaults live here; the `:=` only sets a value if you haven't already, so an
+# endpoint exported earlier in your shell env wins, e.g.
 #   export KIMI_BASE_URL="https://api.moonshot.ai/anthropic"   # flip Kimi to the intl host
-# The `:=` only sets a value if you haven't already — so ~/.env.claude (sourced just above)
-# always wins. No need to edit the launcher functions to retarget an endpoint.
+# No need to edit the launcher functions to retarget an endpoint.
 : ${ZAI_BASE_URL:=https://api.z.ai/api/anthropic}
 : ${KIMI_BASE_URL:=https://api.moonshot.cn/anthropic}
+: ${KIMI_US_BASE_URL:=https://api.kimi.com/coding}
 : ${MINIMAX_BASE_URL:=https://api.minimax.io/anthropic}
 : ${DEEPSEEK_BASE_URL:=https://api.deepseek.com/anthropic}
 : ${OPENROUTER_BASE_URL:=https://openrouter.ai/api}
 : ${VAI_BASE_URL:=https://ai-gateway.vercel.sh}
 : ${SILICONFLOW_BASE_URL:=https://api.siliconflow.cn/v1}
+: ${BIGMODEL_BASE_URL:=https://open.bigmodel.cn/api/paas/v4/}
+: ${QWEN_BASE_URL:=https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic}
 
 # Directory layout — set these at the top so all functions can reference them
 # Allow callers to override _LCP_DIR, otherwise default to the directory containing
@@ -53,7 +75,7 @@ unset _lcp_preflight  # clean up — only needed at source time
 
 # Internal: known provider API keys to scrub from subshell environments
 # Prevents cross-provider credential leakage (e.g., ZAI key visible to OpenRouter)
-_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY KIMI_API_KEY SILICONFLOW_API_KEY ANTHROPIC_API_KEY)
+_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY KIMI_API_KEY KIMI_US_API_KEY SILICONFLOW_API_KEY QWEN_API_KEY ANTHROPIC_API_KEY)
 
 # Internal: observability — session log location
 _LCP_SESSION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/lcp/sessions.jsonl"
@@ -138,7 +160,7 @@ _launch_claude() {
   # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
   local provider=""
   case "${1:-}" in
-    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi)
+    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi|kimi-us|qwen)
       provider="$1"
       shift
       ;;
@@ -156,6 +178,8 @@ _launch_claude() {
       *minimax*)           provider="minimax" ;;
       *deepseek*)          provider="deepseek" ;;
       *moonshot*)          provider="kimi" ;;
+      *api.kimi.com*)      provider="kimi-us" ;;
+      *aliyuncs.com*)      provider="qwen" ;;
       *openrouter*)        provider="openrouter-free" ;;
       *ai-gateway.vercel*) provider="vercel" ;;
       *localhost*)         provider="lcp-local" ;;
@@ -257,9 +281,56 @@ kimi() {
   _launch_claude \
     "$KIMI_BASE_URL" \
     "$KIMI_API_KEY" \
+    "kimi-k3" \
     "kimi-k2.7-code" \
     "kimi-k2.7-code" \
-    "kimi-k2.7-code" \
+    "$@"
+}
+
+# Kimi US (kimi.com) — Kimi Code subscription endpoint, Anthropic-compatible.
+# Separate account/key from the moonshot.cn one above: get it from the Kimi Code
+# Console at kimi.com, store as KIMI_US_API_KEY in the login keychain.
+# Docs: https://www.kimi.com/code/docs/en/
+# Models by plan tier: kimi-for-coding (standard, works on any plan),
+# kimi-for-coding-highspeed (Allegretto+), k3 (Moderato+).
+# Opus slot runs k3 (NOTE: the kimi.com id is "k3", not moonshot's "kimi-k3");
+# sonnet/haiku stay on kimi-for-coding. If k3 400s, the plan doesn't cover it —
+# drop the opus slot back to kimi-for-coding.
+kimi-us() {
+  if [[ -z "$KIMI_US_API_KEY" ]]; then
+    echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com)" >&2
+    return 1
+  fi
+  _launch_claude \
+    "$KIMI_US_BASE_URL" \
+    "$KIMI_US_API_KEY" \
+    "k3" \
+    "kimi-for-coding" \
+    "kimi-for-coding" \
+    kimi-us \
+    "$@"
+}
+
+# Qwen Coding Plan (Token Plan / Team Edition) — Alibaba's Anthropic-native endpoint.
+# Get the key from the Qwen Cloud console (Token Plan -> API Keys), store as
+# QWEN_API_KEY in the login keychain. Docs:
+# https://docs.qwencloud.com/developer-guides/clients-and-developer-tools/claude-code
+# Model IDs must match character-for-character (checked against the Token Plan
+# supported-models table 2026-07-19): opus slot runs the qwen3.8-max-preview
+# preview model; sonnet/haiku stay on GA models since preview capacity/limits
+# can be rockier. If the preview 400s or gets pulled, drop opus to qwen3.7-max.
+qwen() {
+  if [[ -z "$QWEN_API_KEY" ]]; then
+    echo "✗ QWEN_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s QWEN_API_KEY -w  (key from the Qwen Cloud console, Token Plan -> API Keys)" >&2
+    return 1
+  fi
+  _launch_claude \
+    "$QWEN_BASE_URL" \
+    "$QWEN_API_KEY" \
+    "qwen3.8-max-preview" \
+    "qwen3.7-max" \
+    "qwen3.6-flash" \
+    qwen \
     "$@"
 }
 
@@ -289,7 +360,7 @@ fable() {
 
 # Vercel AI Gateway - Anthropic-native gateway to 280+ models across providers.
 # Slugs are creator/model (anthropic/claude-opus-4.8, openai/gpt-5, google/gemini-...).
-# Browse live models + pricing with `vai-models`. Key: AI_GATEWAY_API_KEY in ~/.env.claude.
+# Browse live models + pricing with `vai-models`. Key: AI_GATEWAY_API_KEY in the login keychain.
 vai() {
   _launch_claude \
     "$VAI_BASE_URL" \
@@ -326,7 +397,7 @@ _SF_LOG="$_SF_RUNDIR/siliconflow-litellm.log"
 
 siliconflow() {
   if [[ -z "$SILICONFLOW_API_KEY" ]]; then
-    echo "✗ SILICONFLOW_API_KEY not set — add it to ~/.env.claude" >&2
+    echo "✗ SILICONFLOW_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s SILICONFLOW_API_KEY -w" >&2
     return 1
   fi
   if ! command -v litellm &>/dev/null; then
@@ -426,9 +497,10 @@ geminiflash() {
 #   orf qwen/qwen3-coder:free             # use directly
 #   orf qwen/qwen3-coder:free -p "hi"     # pass extra claude args
 
-# Free model registry (updated 2026-06-05)
+# Free model registry (updated 2026-07-08)
 _OR_FREE_MODELS=(
   "cognitivecomputations/dolphin-mistral-24b-venice-edition:free | Venice: Uncensored (free) | ctx:32k"
+  "cohere/north-mini-code:free                        | Cohere: North Mini Code (free) | ctx:256k"
   "google/gemma-4-26b-a4b-it:free                     | Google: Gemma 4 26B A4B  (free) | ctx:262k"
   "google/gemma-4-31b-it:free                         | Google: Gemma 4 31B (free) | ctx:262k"
   "google/lyria-3-clip-preview                        | Google: Lyria 3 Clip Preview | ctx:1M"
@@ -437,7 +509,6 @@ _OR_FREE_MODELS=(
   "liquid/lfm-2.5-1.2b-thinking:free                  | LiquidAI: LFM2.5-1.2B-Thinking (free) | ctx:32k"
   "meta-llama/llama-3.2-3b-instruct:free              | Meta: Llama 3.2 3B Instruct (free) | ctx:131k"
   "meta-llama/llama-3.3-70b-instruct:free             | Meta: Llama 3.3 70B Instruct (free) | ctx:131k"
-  "moonshotai/kimi-k2.6:free                          | MoonshotAI: Kimi K2.6 (free) | ctx:262k"
   "nousresearch/hermes-3-llama-3.1-405b:free          | Nous: Hermes 3 405B Instruct (free) | ctx:131k"
   "nvidia/nemotron-3-nano-30b-a3b:free                | NVIDIA: Nemotron 3 Nano 30B A3B (free) | ctx:256k"
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | NVIDIA: Nemotron 3 Nano Omni (free) | ctx:256k"
@@ -449,13 +520,26 @@ _OR_FREE_MODELS=(
   "openai/gpt-oss-120b:free                           | OpenAI: gpt-oss-120b (free) | ctx:131k"
   "openai/gpt-oss-20b:free                            | OpenAI: gpt-oss-20b (free) | ctx:131k"
   "openrouter/free                                    | Free Models Router        | ctx:200k"
-  "openrouter/owl-alpha                               | Owl Alpha                 | ctx:1M"
   "poolside/laguna-m.1:free                           | Poolside: Laguna M.1 (free) | ctx:262k"
+  "poolside/laguna-xs-2.1:free                        | Poolside: Laguna XS 2.1 (free) | ctx:262k"
   "poolside/laguna-xs.2:free                          | Poolside: Laguna XS.2 (free) | ctx:262k"
   "qwen/qwen3-coder:free                              | Qwen: Qwen3 Coder 480B A35B (free) | ctx:1M"
   "qwen/qwen3-next-80b-a3b-instruct:free              | Qwen: Qwen3 Next 80B A3B Instruct (free) | ctx:262k"
-  "z-ai/glm-4.5-air:free                              | Z.ai: GLM 4.5 Air (free)  | ctx:131k"
+  "tencent/hy3:free                                   | Tencent: Hy3 (free)       | ctx:262k"
 )
+
+# Probe a free model with a 1-token completion to check if OpenRouter's
+# shared upstream pool is currently 429-ing it. Free models share a global
+# pool per-provider (not a per-key limit), so this flips minute to minute.
+_orf_ratelimited() {
+  local model="$1" code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
+    "$OPENROUTER_BASE_URL/v1/chat/completions" \
+    -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
+  [[ "$code" == "429" ]]
+}
 
 orf() {
   local model="$1"
@@ -490,6 +574,34 @@ orf() {
   fi
 
   echo "Using model: $model"
+
+  if _orf_ratelimited "$model"; then
+    echo "⚠ $model is rate-limited upstream right now — probing other free models..."
+    local candidate found="" tried=0
+    for candidate in "${_OR_FREE_MODELS[@]}"; do
+      (( tried >= 5 )) && break
+      candidate="${candidate%%|*}"; candidate="${candidate// /}"
+      [[ "$candidate" == "$model" ]] && continue
+      tried=$((tried + 1))
+      echo -n "  $candidate... "
+      if _orf_ratelimited "$candidate"; then
+        echo "limited."
+      else
+        echo "OK."
+        found="$candidate"
+        break
+      fi
+    done
+    if [[ -n "$found" ]]; then
+      model="$found"
+      echo "Using model: $model"
+    else
+      echo "  free pool looks fully congested — falling back to glmflash (paid, ~\$0.06/M in, pennies per session)."
+      glmflash "$@"
+      return
+    fi
+  fi
+
   _launch_claude "$OPENROUTER_BASE_URL" "$OPENROUTER_API_KEY" "$model" "$model" "$model" "$@"
 }
 
@@ -991,14 +1103,22 @@ hf() {
     esac
   done
 
-  # Search Hugging Face Hub for GGUF models
+  # Search Hugging Face Hub for GGUF models. Empty query = browse top-liked
+  # models overall, filtered down to ones that actually ship .gguf files —
+  # HF's search API does literal substring matching on repo names, so a
+  # fallback like "llm.gguf" would just never match anything and always 404.
   local query="$*"
-  [[ -z "$query" ]] && query="llm.gguf"
 
-  echo "Searching Hugging Face Hub for: $query..."
+  echo "Searching Hugging Face Hub for: ${query:-(top GGUF models)}..."
 
-  local results
-  results=$(python3 "$_LCP_LIB_DIR/hf_search.py" --query "$query" 2>&1) || { echo "HF search failed. Do you have huggingface-hub installed?"; echo "Install: pip install huggingface-hub"; return 1; }
+  local results search_exit
+  results=$(python3 "$_LCP_LIB_DIR/hf_search.py" --query "$query" 2>&1)
+  search_exit=$?
+  if (( search_exit != 0 )); then
+    echo "HF search failed:"
+    echo "$results" | tail -5
+    return 1
+  fi
 
   if [[ -z "$results" ]]; then
     echo "No models found matching: $query"
@@ -1137,4 +1257,56 @@ llp-reset() {
   else
     echo "No session log found."
   fi
+}
+
+# lcp-help — splash screen listing every launcher/utility in this file
+# Usage: lcp-help
+lcp-help() {
+  cat <<'EOF'
+━━━ Claude Code multi-provider launchers ━━━
+
+  CLOUD (paid, full price)
+    zai            GLM via Z.AI — cost-effective
+    minimax        MiniMax — experimental
+    deepseek       DeepSeek V4 (opus/sonnet=pro, haiku=flash)
+    kimi           Kimi K2.7 Code via moonshot.cn (needs extended thinking on)
+    kimi-us        Kimi Code via kimi.com US endpoint (opus=k3, rest=kimi-for-coding)
+    qwen           Qwen Coding Plan (opus=3.8-max-preview, rest=3.7-max/3.6-flash)
+    openrouter     Claude Opus/Sonnet/Haiku via OpenRouter
+    fable          Claude Fable 5 — premium, 1M ctx, creative work
+    vai            Vercel AI Gateway — 280+ models, any creator/model slug
+    siliconflow    OpenAI-only, bridged via local LiteLLM proxy (WIP)
+
+  CLOUD — cheap-but-good (OpenRouter, pennies per session)
+    glmflash       GLM 4.7 Flash          ~$0.06 / $0.40 per M
+    qwenflash      Qwen3.5 Flash          ~$0.065 / $0.26 per M
+    geminiflash    Gemini 3.1 Flash Lite  ~$0.25 / $1.50 per M
+
+  CLOUD — free tier (OpenRouter, shared pool — can 429)
+    orf [model]    Free model picker (fzf if installed). Auto-falls back to
+                    another free model, then to glmflash, if one 429s.
+    orf-update     Refresh the free-model list from OpenRouter's live API
+    llp-quick      Skip the picker — launch the most reliable free model now
+
+  BROWSE / PICK MODELS (live pricing)
+    or-models      Browse OpenRouter models (--free / --cheap / --use)
+    vai-models     Browse Vercel Gateway models (--cheap / --use)
+    hf             Search/download models from Hugging Face
+
+  LOCAL (offline, your GPU, zero cost)
+    lcp            Launch a local llama.cpp server + Claude Code against it
+                    (--status / --list / --pull / --help for sub-options)
+
+  OBSERVABILITY
+    llp-stats      Session dashboard — error rates, avg duration, per-provider
+    llp-history    Recent sessions (llp-history 30 / llp-history all)
+    llp-which      Suggest a provider for a task (reasoning / fast / creative)
+    llp-reset      Clear the session log
+
+  Keys live in the macOS login keychain (service = var name, e.g.
+  security add-generic-password -U -a "$USER" -s KIMI_US_API_KEY -w).
+  Endpoints/defaults in this file
+  (~/.claude_config.zsh -> llama-cpp-setup/claude_config.zsh).
+  Run any command with no args to see its own usage where it has one.
+EOF
 }
