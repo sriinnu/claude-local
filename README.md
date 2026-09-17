@@ -191,6 +191,7 @@ Extracted from the shell config for maintainability. No embedded Python in shell
 |--------|---------|
 | `lib/or_models.py` | OpenRouter model browser formatter (search, filter, sort) |
 | `lib/or_free_update.py` | Refresh free models list for shell config |
+| `lib/or_price_check.py` | Live-verify one model's pricing before `orf` launches it (catches free→paid drift) |
 | `lib/provider_health.py` | Check OpenRouter model availability |
 | `lib/hf_search.py` | Search HF Hub for GGUF models |
 | `lib/hf_files.py` | List GGUF files in a repo |
@@ -461,7 +462,17 @@ Default model mapping:
 
 You can change these in `~/.claude_config.zsh`.
 
-> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi`, `minimax`, `deepseek`, `fable`, `glmflash`, `qwenflash`, `geminiflash`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi`, `minimax`, `deepseek`, `deepseekflash`, `fable`, `glmflash`, `qwenflash`, `geminiflash`, `musespark`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+>
+> **Prices drift too, not just IDs.** `musespark` (`meta/muse-spark-1.3`) was briefly free
+> ($0/$0) around 2026-09-02 and got scooped into the `orf` free-model cache with no
+> `:free` suffix to flag it; Meta repriced it to $1.25/$4.25 per M before that cache was
+> next refreshed, so anyone who picked it via `orf` in between would've been billed with
+> no warning. `orf` now re-verifies live pricing right before launch and warns (or, on a
+> real terminal, asks for confirmation) if a cached-free pick has actually gone paid — but
+> that only protects `orf`'s free-model path. A hardcoded paid shortcut like `musespark`
+> has no such check; if a provider ever *drops* a price instead of raising it, you won't
+> hear about it here.
 
 ### Interactive picker — `or-models --use`
 
@@ -487,7 +498,8 @@ These are also available in `~/.claude_config.zsh`:
 zai                     # Z.AI GLM 5.2 (cost-effective)
 kimi                    # Moonshot Kimi K2.7 Code (api.moonshot.cn — see note below)
 minimax                 # MiniMax M3 (experimental)
-deepseek                # DeepSeek V4 (pro + flash)
+deepseek                # DeepSeek (V4-Pro main, V4.1 Flash subagents)
+deepseekflash           # DeepSeek V4.1 Flash on every lane
 fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 ```
 
