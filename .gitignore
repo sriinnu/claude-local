@@ -21,3 +21,6 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# second llama.cpp checkout (340M source, never commit)
+llama.cpp-new/

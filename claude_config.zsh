@@ -1,4 +1,15 @@
 # === CLAUDE CODE MULTI-PROVIDER SETUP ===
+#
+# NOTES LIVE IN domain-knowledge, NOT HERE:
+#   ~/Sriinnu/Personal/domain-knowledge/llm-providers/README.md   (current lane status, pricing, gotchas)
+#   .../llm-providers/sweeps/YYYY-MM-DD.md                         (one log per model sweep)
+#   .../llm-providers/probe-lanes.zsh                              (probes every lane, prints no keys)
+# This file keeps one dated status line per lane; the long story goes in those notes.
+# When updating model ids (last sweep 2026-10-12), follow the README's "How to run a sweep":
+#   1. zsh probe-lanes.zsh      2. diff against the notes' state table      3. edit ids + the
+#   lane's dated comment + help prices, `orf-update` for the free list      4. zsh -n, re-source,
+#   launch one changed lane      5. write sweeps/<date>.md + refresh the README tables and
+#   llama-cpp-setup/README.md      6. update Claude memory (project-provider-lanes-status).
 
 # === API KEYS — macOS login keychain (single source of truth) ===
 # Every provider key lives in the login keychain: service name = variable name,
@@ -9,7 +20,7 @@
 # A var already exported in the environment wins — keychain only fills what's unset.
 _LCP_KEYCHAIN_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY \
   AI_GATEWAY_API_KEY KIMI_API_KEY KIMI_US_API_KEY GEMINI_API_KEY SILICONFLOW_API_KEY \
-  BIGMODEL_API_KEY HUGGING_FACE_API_KEY OLLAMA_API_KEY QWEN_API_KEY)
+  BIGMODEL_API_KEY HUGGING_FACE_API_KEY OLLAMA_API_KEY QWEN_API_KEY JEV_API_KEY)
 _lcp_load_keys() {
   local var val
   for var in "${_LCP_KEYCHAIN_KEYS[@]}"; do
@@ -20,6 +31,11 @@ _lcp_load_keys() {
 }
 _lcp_load_keys
 unset -f _lcp_load_keys
+
+# TypeSafe's SDK reads TYPESAFE_API_KEY, but the keychain entry is JEV_API_KEY
+# (named for the model, not the product) — alias so there's still one secret,
+# one keychain entry, not a duplicate.
+[[ -n "$JEV_API_KEY" && -z "$TYPESAFE_API_KEY" ]] && export TYPESAFE_API_KEY="$JEV_API_KEY"
 
 # === PROVIDER ENDPOINTS ===
 # Defaults live here; the `:=` only sets a value if you haven't already, so an
@@ -210,7 +226,10 @@ _launch_claude() {
     export ANTHROPIC_SMALL_FAST_MODEL="$sonnet_model"
     export API_TIMEOUT_MS="3000000"
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-    claude "$@"
+    # Optional per-launch /model picker rows (inline --settings JSON); empty for most providers.
+    local -a picker_args=()
+    [[ -n "$_LCP_PICKER_JSON" ]] && picker_args=(--settings "$_LCP_PICKER_JSON")
+    claude "${picker_args[@]}" "$@"
   )
   local exit_code=$?
   local end_ts
@@ -238,6 +257,9 @@ _launch_claude() {
 
 # GLM (Z.AI) - Cost-effective option. Verified against api.z.ai /v1/models 2026-09-16:
 # glm-5.3 is the current flagship; glm-5.3-flash is the cheap/fast lane (replaces glm-5-turbo).
+# Re-checked 2026-10-12: catalog adds glm-5.3-flashx (OpenRouter prices it $0.37/$1.25 vs flash's
+# $0.02/$1.20 — a speed tier, not a saving; not adopted). ⚠ Every call 429s [1113] "Insufficient
+# balance or no resource package" — the account needs a top-up; the ids themselves are fine.
 zai() {
   _launch_claude \
     "$ZAI_BASE_URL" \
@@ -251,6 +273,7 @@ zai() {
 # MiniMax - Experimental. MiniMax-M3 is still their newest model (OpenRouter 2026-09-16).
 # ⚠ 2026-09-16: MINIMAX_API_KEY 401s "invalid api key" on both api.minimax.io and the China
 # host api.minimaxi.com — key expired/revoked, not the model id. Rotate it in the keychain.
+# Still 401 on 2026-10-12 (same key). MiniMax-M3 is still their newest on OpenRouter ($0.30/$1.20).
 minimax() {
   _launch_claude \
     "$MINIMAX_BASE_URL" \
@@ -262,6 +285,7 @@ minimax() {
 }
 
 # DeepSeek — verified against api.deepseek.com/models + smoke-tested 2026-09-16.
+# Re-verified 2026-10-12: /models still serves exactly deepseek-flash + deepseek-v4-pro, nothing new.
 # Live catalog is exactly two ids:
 #   deepseek-v4-pro  -> DeepSeek-V4-Pro-0813   (1M ctx, 384K out, $0.66/$1.98 per M peak)
 #   deepseek-flash   -> DeepSeek-V4.1-Flash    (1M ctx, 384K out, $0.15/$0.60 per M peak, multimodal)
@@ -301,7 +325,7 @@ deepseekflash() {
 # the .ai (international) host still 401s on it. Must be the /anthropic path (NOT /v1,
 # which is the OpenAI-compatible route Claude Code can't speak).
 # Live /v1/models 2026-09-02 serves exactly: kimi-k3, kimi-k2.7-code,
-# kimi-k2.7-code-highspeed, kimi-k2.6. All four smoke-tested 200.
+# kimi-k2.7-code-highspeed, kimi-k2.6. All four smoke-tested 200. (Re-listed 2026-10-12: same four.)
 # Haiku lane runs kimi-k2.7-code-highspeed: same model, ~3.6x faster on a 200-token
 # reply (2.2s vs 8.1s measured 2026-09-02), which is what the background lane wants.
 # STALE NOTE REMOVED: k2.7-code no longer rejects requests that omit extended thinking —
@@ -327,10 +351,11 @@ kimi() {
 # sonnet/haiku stay on kimi-for-coding. If k3 401s "permission denied", the plan
 # doesn't cover it — drop the opus slot back to kimi-for-coding.
 #
-# Status 2026-09-16: the 2026-09-02 500 outage is over — /v1/models answers again and lists
-# exactly k3, k3-256k, kimi-for-coding, kimi-for-coding-highspeed (ids above still correct).
-# But every model now 403s "reached your monthly usage limit for this billing cycle" — quota,
-# not config. Waits for the cycle reset or extra usage; `kimi` (moonshot.cn) has the same K3.
+# Status 2026-10-12: /v1/models still lists exactly k3, k3-256k, kimi-for-coding,
+# kimi-for-coding-highspeed (ids above still correct), but every model now 403s "Your current
+# subscription does not have access to Kimi Code" — the plan LAPSED (the 09-16 message was the
+# monthly quota; this one is no plan at all). Renew at kimi.com/code/#pricing, or use `kimi`
+# (moonshot.cn) — same K3, that key still works.
 kimi-us() {
   if [[ -z "$KIMI_US_API_KEY" ]]; then
     echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com)" >&2
@@ -353,16 +378,32 @@ kimi-us() {
 # Model IDs must match character-for-character (checked against the Token Plan
 # supported-models table 2026-07-19): opus slot runs qwen3.8-max, which went GA and
 # replaced qwen3.8-max-preview; haiku moved qwen3.6-flash -> qwen3.8-flash (2026-09-02,
-# IDs cross-checked against the Vercel AI Gateway + OpenRouter catalogs, NOT against the
-# Token Plan table — the plan currently 403s "AccessDenied.Unpurchased" on every model,
-# so this endpoint is dead until the subscription is renewed). If a model 400s, drop
+# IDs cross-checked against the Vercel AI Gateway + OpenRouter catalogs). Plan is LIVE again
+# as of 2026-10-12: all nine ids (qwen3.8-max, qwen3.7-max, qwen3.7-plus, qwen3.8-flash,
+# qwen3.6-flash, deepseek-v4-pro, deepseek-v4.1-flash, glm-5.3, glm-5.2) smoke-tested 200 via
+# /v1/messages. (The 09-16 "AccessDenied.Unpurchased" 403 was a lapsed subscription.) Note the
+# plan serves no /v1/models route (404 "Not support") — smoke-test ids, don't list them. If a model 400s, drop
 # opus to qwen3.7-max and haiku to qwen3.6-flash.
-qwen() {
+# /model picker rows for the plan (schema read from claude 2.1.285: modelPicker.options
+# = [{model,label?,description?,behavesAs?}]). Added to the built-in lineup, not replacing it.
+_QWEN_PICKER_JSON='{"modelPicker":{"options":[
+{"model":"qwen3.8-max","label":"Qwen 3.8 Max"},
+{"model":"qwen3.7-max","label":"Qwen 3.7 Max"},
+{"model":"qwen3.7-plus","label":"Qwen 3.7 Plus"},
+{"model":"qwen3.8-flash","label":"Qwen 3.8 Flash"},
+{"model":"qwen3.6-flash","label":"Qwen 3.6 Flash"},
+{"model":"deepseek-v4-pro","label":"DeepSeek V4 Pro"},
+{"model":"deepseek-v4.1-flash","label":"DeepSeek V4.1 Flash"},
+{"model":"glm-5.3","label":"GLM 5.3"},
+{"model":"glm-5.2","label":"GLM 5.2"}]}}'
+# Named qwen-cc (not qwen) so the official Qwen Code binary (/opt/homebrew/bin/qwen,
+# installed 2026-09-30 from the Bailian installer) isn't shadowed by this function.
+qwen-cc() {
   if [[ -z "$QWEN_API_KEY" ]]; then
     echo "✗ QWEN_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s QWEN_API_KEY -w  (key from the Qwen Cloud console, Token Plan -> API Keys)" >&2
     return 1
   fi
-  _launch_claude \
+  _LCP_PICKER_JSON="$_QWEN_PICKER_JSON" _launch_claude \
     "$QWEN_BASE_URL" \
     "$QWEN_API_KEY" \
     "qwen3.8-max" \
@@ -372,40 +413,65 @@ qwen() {
     "$@"
 }
 
-# OpenRouter - paid models (Claude, etc.)
+# Same Token Plan endpoint + key, other model families it serves (market list 2026-09-30:
+# deepseek-v4-pro, deepseek-v4.1-flash, glm-5.3, glm-5.2, qwen3.7-plus). Each wrapper
+# only swaps the three model slots. All five smoke-tested 200 on 2026-10-12; if one 400s/403s
+# later, it dropped out of the plan's supported table — swap the ID.
+_qwen_plan() {
+  if [[ -z "$QWEN_API_KEY" ]]; then
+    echo "✗ QWEN_API_KEY not found — see qwen() for how to add it" >&2
+    return 1
+  fi
+  local opus="$1" sonnet="$2" haiku="$3"; shift 3
+  _LCP_PICKER_JSON="$_QWEN_PICKER_JSON" _launch_claude "$QWEN_BASE_URL" "$QWEN_API_KEY" "$opus" "$sonnet" "$haiku" qwen "$@"
+}
+# Generation models (image/video) can't run in the Claude harness — separate endpoints.
+# Files land in ~/qwen-media (override with QWEN_MEDIA_DIR). Usage: qwen-image "prompt" [--model ..]
+qwen-image() { python3 "${_LCP_LIB_DIR}/qwen_media.py" image "$@"; }
+qwen-video() { python3 "${_LCP_LIB_DIR}/qwen_media.py" video "$@"; }
+qwen-ds()   { _qwen_plan "deepseek-v4-pro" "deepseek-v4-pro" "deepseek-v4.1-flash" "$@"; }
+qwen-glm()  { _qwen_plan "glm-5.3" "glm-5.3" "glm-5.2" "$@"; }
+qwen-plus() { _qwen_plan "qwen3.7-plus" "qwen3.7-plus" "qwen3.8-flash" "$@"; }
+
+# OpenRouter - Claude via OpenRouter. Moved to the 5.5 family 2026-10-12 (all three on the OR
+# catalog): opus-5.5 $4/$20 (was opus-5 at $5/$25 — newer AND cheaper), sonnet-5.5 $2/$10,
+# haiku-5.5 $0.10/$0.50 (was haiku-4.5 at $1/$5, 10x cheaper for the background lane).
 openrouter() {
   _launch_claude \
     "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
-    "anthropic/claude-opus-5" \
-    "anthropic/claude-sonnet-5" \
-    "anthropic/claude-haiku-4.5" \
+    "anthropic/claude-opus-5.5" \
+    "anthropic/claude-sonnet-5.5" \
+    "anthropic/claude-haiku-5.5" \
     "$@"
 }
 
 # Fable 5.1 — Anthropic's creative powerhouse via OpenRouter. 1M ctx. Premium ($10/$50 per M).
-# Opus+Sonnet roles run Fable; haiku lane drops to claude-haiku-4.5 so background
-# calls (titles, summaries) don't bill at $50/M output.
+# Opus+Sonnet roles run Fable; haiku lane drops to claude-haiku-5.5 ($0.10/$0.50, moved from
+# haiku-4.5 on 2026-10-12) so background calls (titles, summaries) don't bill at $50/M output.
 fable() {
   _launch_claude \
     "$OPENROUTER_BASE_URL" \
     "$OPENROUTER_API_KEY" \
     "anthropic/claude-fable-5.1" \
     "anthropic/claude-fable-5.1" \
-    "anthropic/claude-haiku-4.5" \
+    "anthropic/claude-haiku-5.5" \
     "$@"
 }
 
 # Vercel AI Gateway - Anthropic-native gateway to 280+ models across providers.
-# Slugs are creator/model (anthropic/claude-opus-5, openai/gpt-5, google/gemini-...).
+# Slugs are creator/model (anthropic/claude-opus-5.5, openai/gpt-6.1-sol, google/gemini-...).
 # Browse live models + pricing with `vai-models`. Key: AI_GATEWAY_API_KEY in the login keychain.
+# ⚠ 2026-10-12: AI_GATEWAY_API_KEY is NOT in the login keychain — this lane launches with an empty
+# token until you add it (security add-generic-password -U -a "$USER" -s AI_GATEWAY_API_KEY -w).
+# Slugs moved to the 5.5 family the same day; the gateway's public /v1/models lists all three.
 vai() {
   _launch_claude \
     "$VAI_BASE_URL" \
     "$AI_GATEWAY_API_KEY" \
-    "anthropic/claude-opus-5" \
-    "anthropic/claude-sonnet-5" \
-    "anthropic/claude-haiku-4.5" \
+    "anthropic/claude-opus-5.5" \
+    "anthropic/claude-sonnet-5.5" \
+    "anthropic/claude-haiku-5.5" \
     "$@"
 }
 
@@ -494,7 +560,8 @@ YAML
 # OpenRouter cheap-but-good launchers (paid, but pennies — won't queue like free tier).
 # Verify live pricing anytime with `or-models --cheap`.
 
-# GLM 5.3 Flash — ~$0.075/$0.25 per M, 1.3M ctx. Daily-driver value pick.
+# GLM 5.3 Flash — $0.02/$1.20 per M, 1M ctx. Re-priced by 2026-10-12: input fell from ~$0.075 but
+# output jumped ~5x from ~$0.25. Fine for read-heavy work; for chatty output qwenflash is ~10x cheaper.
 # (replaced glm-4.7-flash 2026-09-02: cheaper output, 6x the context.)
 glmflash() {
   _launch_claude \
@@ -618,23 +685,20 @@ musespark() {
 # Dynamic picker: run `orf` to pick interactively, or `orf <model-id>` to use directly
 # Examples:
 #   orf                                    # interactive fzf picker
-#   orf qwen/qwen3-coder:free             # use directly
-#   orf qwen/qwen3-coder:free -p "hi"     # pass extra claude args
+#   orf openrouter/free                   # use directly (OpenRouter's free-pool router)
+#   orf openrouter/free -p "hi"           # pass extra claude args
 
-# Free model registry (updated 2026-09-12)
+# Free model registry (updated 2026-10-12)
 _OR_FREE_MODELS=(
+  "apodex/apodex-1.1-mini:free                        | Apodex: Apodex 1.1 Mini (free) | ctx:262k"
   "cohere/north-mini-code:free                        | Cohere: North Mini Code (free) | ctx:256k"
   "dots-studio/dots-3-note-preview:free               | Dots Studio: Dots3-Note Preview (free) | ctx:512k"
   "google/gemma-4-26b-a4b-it:free                     | Google: Gemma 4 26B A4B  (free) | ctx:262k"
   "google/gemma-4-31b-it:free                         | Google: Gemma 4 31B (free) | ctx:262k"
   "google/lyria-3-clip-preview                        | Google: Lyria 3 Clip Preview | ctx:1M"
   "google/lyria-3-pro-preview                         | Google: Lyria 3 Pro Preview | ctx:1M"
-  "inclusionai/ling-3.0-flash-fin:free                | inclusionAI: Ling 3.0 Flash Fin (free) | ctx:262k"
-  "inclusionai/ling-3.0-flash-sante:free              | inclusionAI: Ling 3.0 Flash Sante (free) | ctx:262k"
-  "inclusionai/ling-3.0-flash-vl:free                 | inclusionAI: Ling 3.0 Flash VL (free) | ctx:262k"
+  "inclusionai/ling-3.1-flash                         | inclusionAI: Ling 3.1 Flash | ctx:262k"
   "liquid/lfm-2.5-2.6b:free                           | LiquidAI: LFM2.5-2.6B (free) | ctx:65k"
-  "nex-agi/nex-n2.5-mini:free                         | Nex AGI: Nex-N2.5-Mini (free) | ctx:262k"
-  "nex-agi/nex-n2.5-pro:free                          | Nex AGI: Nex-N2.5-Pro (free) | ctx:262k"
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | NVIDIA: Nemotron 3 Nano Omni (free) | ctx:256k"
   "nvidia/nemotron-3-super-120b-a12b:free             | NVIDIA: Nemotron 3 Super (free) | ctx:262k"
   "nvidia/nemotron-3-ultra-550b-a55b:free             | NVIDIA: Nemotron 3 Ultra (free) | ctx:1M"
@@ -778,8 +842,8 @@ orf() {
       model="$found"
       echo "Using model: $model"
     else
-      echo "  free pool looks fully congested — falling back to glmflash (paid, ~\$0.06/M in, pennies per session)."
-      glmflash "$@"
+      echo "  free pool looks fully congested — falling back to qwenflash (paid, ~\$0.03/\$0.13 per M, pennies per session)."
+      qwenflash "$@"
       return
     fi
   fi
@@ -1421,11 +1485,12 @@ llp-which() {
 }
 
 # llp-quick — one-liner: launch the best free model right now
-# Picks the most reliable free OpenRouter model and launches immediately
-# with no prompts. For when you just want to code now.
+# Uses openrouter/free — OpenRouter's own router over the free pool — and launches with no
+# prompts. Switched 2026-10-12: qwen/qwen3-coder:free is gone from the catalog, and every
+# individual :free id probed that day 404'd "no endpoints" while the router answered 200.
 llp-quick() {
-  echo "→ Launching best free model (qwen/qwen3-coder:free)..."
-  orf qwen/qwen3-coder:free "$@"
+  echo "→ Launching best free model (openrouter/free)..."
+  orf openrouter/free "$@"
 }
 
 # llp-reset — clear the session log
@@ -1452,24 +1517,30 @@ lcp-help() {
     minimax        MiniMax — experimental
     deepseek       DeepSeek (opus=V4-Pro, sonnet/haiku=V4.1 Flash)
     deepseekflash  DeepSeek V4.1 Flash on all lanes — ~$0.15 / $0.60 per M
-    kimi           Kimi K2.7 Code via moonshot.cn (needs extended thinking on)
+    kimi           Kimi K3 / K2.7 Code via moonshot.cn
     kimi-us        Kimi Code via kimi.com US endpoint (opus=k3, rest=kimi-for-coding)
-    qwen           Qwen Coding Plan (opus=3.8-max, sonnet=3.7-max, haiku=3.8-flash) — plan lapsed
-    openrouter     Claude Opus/Sonnet/Haiku via OpenRouter
+    qwen           Official Qwen Code CLI (Homebrew binary, not a function here)
+    qwen-cc        Qwen Token Plan inside Claude Code (opus=3.8-max, sonnet=3.7-max, haiku=3.8-flash)
+    qwen-image     Image gen via the plan (qwen-image-3.0-pro default; wan2.7-image[-pro])
+    qwen-video     Video gen via the plan (happyhorse-1.1-t2v default) -> ~/qwen-media
+    qwen-ds        Same plan: DeepSeek V4-Pro (opus/sonnet), V4.1 Flash (haiku)
+    qwen-glm       Same plan: GLM 5.3 (opus/sonnet), GLM 5.2 (haiku)
+    qwen-plus      Same plan: Qwen3.7 Plus (opus/sonnet), 3.8-flash (haiku)
+    openrouter     Claude Opus/Sonnet/Haiku 5.5 via OpenRouter
     fable          Claude Fable 5 — premium, 1M ctx, creative work
     vai            Vercel AI Gateway — 280+ models, any creator/model slug
     siliconflow    OpenAI-only, bridged via local LiteLLM proxy (WIP)
     geminifree     Gemini free tier on your own GEMINI_API_KEY, via local LiteLLM ($0, Flash only)
 
   CLOUD — cheap-but-good (OpenRouter, pennies per session)
-    glmflash       GLM 5.3 Flash          ~$0.09 / $0.30 per M
+    glmflash       GLM 5.3 Flash          ~$0.02 / $1.20 per M
     qwenflash      Qwen3.7 Flash          ~$0.03 / $0.13 per M
     geminiflash    Gemini 3.1 Flash Lite  ~$0.25 / $1.50 per M
     musespark      Meta Muse Spark 1.3    ~$1.25 / $4.25 per M
 
   CLOUD — free tier (OpenRouter, shared pool — can 429)
     orf [model]    Free model picker (fzf if installed). Auto-falls back to
-                    another free model, then to glmflash, if one 429s.
+                    another free model, then to qwenflash, if one 429s.
     orf-update     Refresh the free-model list from OpenRouter's live API
     llp-quick      Skip the picker — launch the most reliable free model now
 
