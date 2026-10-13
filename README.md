@@ -25,6 +25,8 @@ Plus a **model browser** (`or-models`) to search all 300+ OpenRouter models with
 
 ---
 
+> **Alibaba Qwen Token Plan** (`qwen-cc`, `qwen-image`, `qwen-video`, the `/model` picker, endpoints, gotchas): see [QWEN.md](QWEN.md).
+
 ## Install
 
 > **Platform**: macOS with Apple Silicon (M1–M4). The local llama.cpp option uses Metal GPU. OpenRouter options work on any platform.
@@ -78,8 +80,8 @@ hf                                          # search HF Hub → pick → downloa
 hf qwen3 coder                              # search with keywords
 
 # OpenRouter free models — $0, cloud-hosted
-orf                                         # interactive picker (25+ models)
-orf qwen/qwen3-coder:free                   # use a specific free model
+orf                                         # interactive picker (19 models, 2026-10-12)
+orf openrouter/free                         # OpenRouter's free-pool router
 
 # OpenRouter paid — use any premium model
 openrouter                                  # hardcoded to Claude Opus/Sonnet/Haiku
@@ -191,6 +193,7 @@ Extracted from the shell config for maintainability. No embedded Python in shell
 |--------|---------|
 | `lib/or_models.py` | OpenRouter model browser formatter (search, filter, sort) |
 | `lib/or_free_update.py` | Refresh free models list for shell config |
+| `lib/or_price_check.py` | Live-verify one model's pricing before `orf` launches it (catches free→paid drift) |
 | `lib/provider_health.py` | Check OpenRouter model availability |
 | `lib/hf_search.py` | Search HF Hub for GGUF models |
 | `lib/hf_files.py` | List GGUF files in a repo |
@@ -354,7 +357,7 @@ codex-local() {
 source ~/.claude_config.zsh
 
 orf                                         # interactive picker
-orf qwen/qwen3-coder:free                   # specific model
+orf openrouter/free                         # free-pool router
 orf nvidia/nemotron-3-super-120b-a12b:free   # specific model
 ```
 
@@ -378,41 +381,30 @@ orf nvidia/nemotron-3-super-120b-a12b:free   # specific model
 
 | Model | ID | Context | Notes |
 |-------|----|---------|-------|
-| Qwen3 Coder 480B | `qwen/qwen3-coder:free` | 262k | MoE, purpose-built for code — my pick |
 | Gemma 4 31B | `google/gemma-4-31b-it:free` | 262k | Dense, strongest Gemma, multimodal |
+| Poolside Laguna S 2.1 | `poolside/laguna-s-2.1:free` | 262k | Code-focused |
+| Cohere North Mini Code | `cohere/north-mini-code:free` | 256k | Code-focused |
 | Gemma 4 26B A4B | `google/gemma-4-26b-a4b-it:free` | 262k | MoE — 4B active, very fast |
 | NVIDIA Nemotron 3 Super 120B | `nvidia/nemotron-3-super-120b-a12b:free` | 262k | MoE, reasoning-tuned |
-| Llama 3.3 70B | `meta-llama/llama-3.3-70b-instruct:free` | 65k | Solid all-rounder |
-| OpenAI GPT-OSS 120B | `openai/gpt-oss-120b:free` | 131k | OpenAI's open-weights model |
-| Hermes 3 405B | `nousresearch/hermes-3-llama-3.1-405b:free` | 131k | Largest free model |
 
 #### Good general-purpose
 
 | Model | ID | Context | Notes |
 |-------|----|---------|-------|
-| Qwen3 Next 80B | `qwen/qwen3-next-80b-a3b-instruct:free` | 262k | MoE, fast |
-| NVIDIA Nemotron 3 Nano 30B | `nvidia/nemotron-3-nano-30b-a3b:free` | 256k | MoE, lightweight |
-| Arcee Trinity Large | `arcee-ai/trinity-large-preview:free` | 131k | Preview |
-| MiniMax M2.5 | `minimax/minimax-m2.5:free` | 196k | Large context |
-| OpenAI GPT-OSS 20B | `openai/gpt-oss-20b:free` | 131k | Smaller OSS model |
-| GLM 4.5 Air | `z-ai/glm-4.5-air:free` | 131k | Z.AI model |
-| Owl Alpha | `openrouter/owl-alpha` | 1M | OpenRouter's in-house preview |
+| Thinking Machines Inkling | `thinkingmachines/inkling:free` | 1M | Largest context in the free pool |
+| Thinking Machines Inkling Small | `thinkingmachines/inkling-small:free` | 1M | Lighter sibling |
+| NVIDIA Nemotron 3 Ultra 550B | `nvidia/nemotron-3-ultra-550b-a55b:free` | 1M | Biggest free NVIDIA MoE |
+| NVIDIA Nemotron 3.5 Lightning | `nvidia/nemotron-3.5-lightning:free` | 1M | Speed-tuned |
+| Dots3-Note Preview | `dots-studio/dots-3-note-preview:free` | 512k | Long-context notes/summaries |
+| inclusionAI Ling 3.1 Flash | `inclusionai/ling-3.1-flash` | 262k | $0 but no `:free` suffix — orf re-checks price before launch |
+| Apodex 1.1 Mini | `apodex/apodex-1.1-mini:free` | 262k | New 2026-10 |
 
 #### Smaller / lightweight
 
 | Model | ID | Context | Notes |
 |-------|----|---------|-------|
-| Gemma 3 27B | `google/gemma-3-27b-it:free` | 131k | Google, solid |
-| Gemma 3 12B | `google/gemma-3-12b-it:free` | 32k | Mid-size |
-| Gemma 3 4B | `google/gemma-3-4b-it:free` | 32k | Small |
-| Gemma 3n 4B | `google/gemma-3n-e4b-it:free` | 8k | Tiny context |
-| Gemma 3n 2B | `google/gemma-3n-e2b-it:free` | 8k | Smallest |
-| NVIDIA Nemotron Nano 12B VL | `nvidia/nemotron-nano-12b-v2-vl:free` | 128k | Vision + language |
-| NVIDIA Nemotron Nano 9B | `nvidia/nemotron-nano-9b-v2:free` | 128k | Lightweight |
-| Llama 3.2 3B | `meta-llama/llama-3.2-3b-instruct:free` | 131k | Tiny |
-| Venice Uncensored 24B | `cognitivecomputations/dolphin-mistral-24b-venice-edition:free` | 32k | No guardrails |
-| LiquidAI 1.2B Instruct | `liquid/lfm-2.5-1.2b-instruct:free` | 32k | Experimental |
-| LiquidAI 1.2B Thinking | `liquid/lfm-2.5-1.2b-thinking:free` | 32k | Reasoning |
+| LiquidAI LFM2.5 2.6B | `liquid/lfm-2.5-2.6b:free` | 65k | Tiny, fast |
+| NVIDIA Nemotron 3 Nano Omni 30B A3B | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | 256k | MoE, 3B active, reasoning |
 
 ### Connect free models to Codex CLI
 
@@ -455,13 +447,23 @@ openrouter                  # defaults to Claude
 ```
 
 Default model mapping:
-- Opus -> `anthropic/claude-opus-4.8`
-- Sonnet -> `anthropic/claude-sonnet-4.6`
-- Haiku -> `anthropic/claude-haiku-4.5`
+- Opus -> `anthropic/claude-opus-5.5`
+- Sonnet -> `anthropic/claude-sonnet-5.5`
+- Haiku -> `anthropic/claude-haiku-5.5`
 
 You can change these in `~/.claude_config.zsh`.
 
-> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi`, `minimax`, `deepseek`, `fable`, `glmflash`, `qwenflash`, `geminiflash`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi`, `minimax`, `deepseek`, `deepseekflash`, `fable`, `glmflash`, `qwenflash`, `geminiflash`, `musespark`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+>
+> **Prices drift too, not just IDs.** `musespark` (`meta/muse-spark-1.3`) was briefly free
+> ($0/$0) around 2026-09-02 and got scooped into the `orf` free-model cache with no
+> `:free` suffix to flag it; Meta repriced it to $1.25/$4.25 per M before that cache was
+> next refreshed, so anyone who picked it via `orf` in between would've been billed with
+> no warning. `orf` now re-verifies live pricing right before launch and warns (or, on a
+> real terminal, asks for confirmation) if a cached-free pick has actually gone paid — but
+> that only protects `orf`'s free-model path. A hardcoded paid shortcut like `musespark`
+> has no such check; if a provider ever *drops* a price instead of raising it, you won't
+> hear about it here.
 
 ### Interactive picker — `or-models --use`
 
@@ -487,7 +489,8 @@ These are also available in `~/.claude_config.zsh`:
 zai                     # Z.AI GLM 5.2 (cost-effective)
 kimi                    # Moonshot Kimi K2.7 Code (api.moonshot.cn — see note below)
 minimax                 # MiniMax M3 (experimental)
-deepseek                # DeepSeek V4 (pro + flash)
+deepseek                # DeepSeek (V4-Pro main, V4.1 Flash subagents)
+deepseekflash           # DeepSeek V4.1 Flash on every lane
 fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 ```
 
@@ -502,7 +505,7 @@ fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 One Anthropic-native endpoint fronting 280+ models (Anthropic, OpenAI, Google, etc.), with traffic and spend visible in your Vercel dashboard. Because it speaks the Messages API directly, it drops straight into Claude Code — no translation proxy.
 
 ```bash
-vai                            # launch with Claude (opus-4.8/sonnet-4.6/haiku-4.5)
+vai                            # launch with Claude (opus-5.5/sonnet-5.5/haiku-5.5)
 vai-models                     # browse all 280+ models with live pricing
 vai-models claude-opus         # search by name/id
 vai-models --cheap             # cheapest first
@@ -618,5 +621,5 @@ Symlinks in `~/.local/bin/` automatically pick up the new binaries.
 **Model gives bad output**
 - Try a larger model or higher quant.
 - Qwen3-4B is good for testing but not great for complex coding. Use Qwen3-30B-A3B, Gemma-4-26B-A4B, or larger for real work.
-- On OpenRouter, `qwen/qwen3-coder:free` or `google/gemma-4-31b-it:free` are the strongest free options.
+- On OpenRouter, `openrouter/free` (the free-pool router) is the reliable pick; individual `:free` ids come and go — check `or-models --free`.
 - For Gemma 4, use unsloth's `UD-` (Unsloth Dynamic) quantized GGUFs. The `XL` variants include full MoE expert weights for better quality.
