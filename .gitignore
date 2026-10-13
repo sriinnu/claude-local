@@ -24,3 +24,6 @@ __pycache__/
 
 # second llama.cpp checkout (340M source, never commit)
 llama.cpp-new/
+
+# local symlink to ~/Models/gguf (machine-specific, never commit)
+models
