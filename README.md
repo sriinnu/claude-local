@@ -25,7 +25,7 @@ Plus a **model browser** (`or-models`) to search all 300+ OpenRouter models with
 
 ---
 
-> **Alibaba Qwen Token Plan** (`qwen-cc`, `qwen-image`, `qwen-video`, the `/model` picker, endpoints, gotchas): see [QWEN.md](QWEN.md).
+> **Alibaba Qwen Token Plan** (`qwen-cc`, `qwen-image`, `qwen-video`, the `/model` picker, endpoints, gotchas): documented in my private notes repo (`llm-providers/QWEN.md`), not here — the launchers' comments in `claude_config.zsh` carry the essentials.
 
 ## Install
 
