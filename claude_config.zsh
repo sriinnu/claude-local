@@ -1,9 +1,9 @@
 # === CLAUDE CODE MULTI-PROVIDER SETUP ===
 #
-# NOTES LIVE IN domain-knowledge, NOT HERE:
-#   ~/Sriinnu/Personal/domain-knowledge/llm-providers/README.md   (current lane status, pricing, gotchas)
-#   .../llm-providers/sweeps/YYYY-MM-DD.md                         (one log per model sweep)
-#   .../llm-providers/probe-lanes.zsh                              (probes every lane, prints no keys)
+# NOTES LIVE IN THE PRIVATE NOTES REPO (llm-providers/), NOT HERE:
+#   llm-providers/README.md              (current lane status, pricing, gotchas, Qwen plan doc beside it)
+#   llm-providers/sweeps/YYYY-MM-DD.md   (one log per model sweep)
+#   llm-providers/probe-lanes.zsh        (probes every lane, prints no keys)
 # This file keeps one dated status line per lane; the long story goes in those notes.
 # When updating model ids (last sweep 2026-10-12), follow the README's "How to run a sweep":
 #   1. zsh probe-lanes.zsh      2. diff against the notes' state table      3. edit ids + the
