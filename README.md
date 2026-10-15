@@ -453,7 +453,7 @@ Default model mapping:
 
 You can change these in `~/.claude_config.zsh`.
 
-> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi`, `minimax`, `deepseek`, `deepseekflash`, `fable`, `glmflash`, `qwenflash`, `geminiflash`, `musespark`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi-us`, `kimi-china`, `minimax`, `deepseek`, `deepseekflash`, `fable`, `glmflash`, `qwenflash`, `geminiflash`, `musespark`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
 >
 > **Prices drift too, not just IDs.** `musespark` (`meta/muse-spark-1.3`) was briefly free
 > ($0/$0) around 2026-09-02 and got scooped into the `orf` free-model cache with no
@@ -487,18 +487,21 @@ These are also available in `~/.claude_config.zsh`:
 
 ```bash
 zai                     # Z.AI GLM 5.2 (cost-effective)
-kimi                    # Moonshot Kimi K2.7 Code (api.moonshot.cn — see note below)
+kimi-us                 # Kimi Code plan via api.kimi.ai (k3[1m] / K2.8 Preview[1m] / k3-256k)
+kimi-china              # Moonshot pay-as-you-go via api.moonshot.cn (alias kimi-cn — see note below)
+kimi                    # NOT a launcher: Moonshot's official Kimi Code CLI binary
 minimax                 # MiniMax M3 (experimental)
 deepseek                # DeepSeek (V4-Pro main, V4.1 Flash subagents)
 deepseekflash           # DeepSeek V4.1 Flash on every lane
 fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 ```
 
-> **Kimi note**: the `kimi` launcher points at `api.moonshot.cn` (the `.cn` platform) — that's
-> where the key in `~/.env.claude` is provisioned; the international `.ai` host 401s on it.
-> `kimi-k2.7-code` also requires extended thinking. If a request ever fails with
-> `400 invalid thinking: only type=enabled is allowed`, turn thinking on — it's not a key
-> or endpoint problem. Flip the host to `api.moonshot.ai` only if your key is an international one.
+> **Kimi note**: two accounts, two keys. `kimi-us` uses the Kimi Code subscription key
+> (`KIMI_US_API_KEY`, from kimi.com/code/console) on `api.kimi.ai/coding`; `kimi-china` uses the
+> Moonshot Open Platform key (`KIMI_API_KEY`, a `.cn` platform key — the international `.ai` host
+> 401s on it). Both keys live in the login keychain. The bare `kimi` command is Moonshot's official
+> Kimi Code CLI, so the old `kimi` launcher function was retired on 2026-10-15. Flip
+> `KIMI_BASE_URL` to `api.moonshot.ai/anthropic` only if your Moonshot key is an international one.
 
 ### Vercel AI Gateway — `vai`
 

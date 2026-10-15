@@ -224,7 +224,10 @@ _launch_claude() {
     export ANTHROPIC_DEFAULT_SONNET_MODEL="$sonnet_model"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
     export ANTHROPIC_MODEL="$opus_model"
-    export ANTHROPIC_SMALL_FAST_MODEL="$sonnet_model"
+    # Claude Code's helper calls (titles, summaries, classifiers) read SMALL_FAST first and
+    # only fall back to DEFAULT_HAIKU when it is unset — so this must be the haiku slot.
+    # (Was "$sonnet_model" until 2026-10-15, which quietly sent every lane's helper traffic to sonnet.)
+    export ANTHROPIC_SMALL_FAST_MODEL="$haiku_model"
     export API_TIMEOUT_MS="3000000"
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     # Optional per-launch /model picker rows (inline --settings JSON); empty for most providers.
@@ -356,38 +359,44 @@ kimi-cn() { kimi-china "$@"; }
 # Claude Code appends /v1/messages itself; the OpenAI-compatible route is <host>/coding/v1.
 # Models (live /v1/models 2026-10-15, all four smoke-tested 200 on this key):
 #   k3                        K3, 1M ctx (1M needs Pro/Allegretto+), effort low/high/max (default high),
-#                             ~2x the quota of k3-256k. Claude Code 1M form: "k3[1m]".
+#                             ~2x the quota of k3-256k. Claude Code 1M form: "k3[1m]" — Claude Code
+#                             strips the tag, sends beta context-1m-2025-08-07 (Kimi answers 200) and
+#                             sizes the window at 1M; bare "k3" is treated as an unknown 200k model
+#                             and auto-compacts at 200k while you still pay k3's quota.
 #   k3-256k                   K3 at 256k ctx, cheapest-quota K3. Image in, no video.
 #   kimi-for-coding           K2.8 Preview (upgraded in place 2026-09-11, same id), 1M ctx,
 #                             effort low/high/max (default max). Andante/Plus+.
 #   kimi-for-coding-highspeed K2.7 Code HighSpeed, 256k, ~6x output speed at 3x quota. Pro/Allegretto+.
 # NOTE kimi.com ids are "k3"/"k3-256k", not moonshot's "kimi-k3". Use the id, never the display name.
 # Plan tier: highspeed answers 200 for this key, so the plan is Pro/Allegretto+ (1M unlocked).
-# Lanes: opus=k3 (frontier), sonnet=kimi-for-coding (K2.8 Preview, 1M), haiku=k3-256k (cheapest
-# stated quota cost for the background lane; highspeed would burn 3x). Pick k3[1m] or highspeed
-# per-session from /model (picker rows below). A 401 "permission denied" on a model = tier gap.
-# Effort: /effort medium -> Kimi "high" (recommended), xhigh/max -> "max".
-# Quota: one 5h rolling window + one monthly pool (new plans have no weekly). Check remaining at
+# Lanes: opus=k3[1m] (frontier), sonnet=kimi-for-coding[1m] (K2.8 Preview), haiku=k3-256k (cheapest
+# stated quota cost; serves `model: haiku` subagents, /model haiku, and the helper calls via
+# SMALL_FAST; highspeed would burn 3x). CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 is set lane-local so
+# the 256k model is sized at 262144 instead of the unknown-model 200k default; [1m] models ignore it.
+# Pick highspeed per-session from /model (picker rows below). A 401 "permission denied" on a model = tier gap.
+# Effort: Claude Code already sends effort "high" by default (Kimi's recommended level);
+# /effort medium -> Kimi "high", xhigh/max -> "max". No CLAUDE_CODE_EFFORT_LEVEL needed.
+# Quota: one 5h rolling window + one monthly pool. This key is on a new-style plan (no weekly
+# block in /usages; legacy Andante/Moderato/Allegretto plans still carry a weekly). Check remaining at
 # kimi.com/code/console, or `GET https://api.kimi.ai/coding/v1/usages` with the key (Runic reads this).
 #
 # Status 2026-10-15: plan LIVE again (the 10-12 "does not have access to Kimi Code" 403 was a lapse;
 # renewed since). 5h window 15% used, monthly 0.4% at check time.
 _KIMI_US_PICKER_JSON='{"modelPicker":{"options":[
-{"model":"k3","label":"Kimi K3","description":"256k ctx, effort high"},
-{"model":"k3[1m]","label":"Kimi K3 (1M)","description":"1M ctx, ~2x quota of k3-256k"},
-{"model":"k3-256k","label":"Kimi K3-256k","description":"cheapest K3 quota"},
-{"model":"kimi-for-coding","label":"Kimi K2.8 Preview","description":"1M ctx, effort max"},
-{"model":"kimi-for-coding-highspeed","label":"Kimi K2.7 HighSpeed","description":"~6x speed, 3x quota"}]}}'
+{"model":"k3[1m]","label":"Kimi K3 (1M)","description":"1M ctx, effort high, ~2x quota of k3-256k"},
+{"model":"k3-256k","label":"Kimi K3-256k","description":"256k ctx, cheapest K3 quota"},
+{"model":"kimi-for-coding[1m]","label":"Kimi K2.8 Preview (1M)","description":"1M ctx, effort max"},
+{"model":"kimi-for-coding-highspeed","label":"Kimi K2.7 HighSpeed","description":"256k ctx, ~6x speed, 3x quota"}]}}'
 kimi-us() {
   if [[ -z "$KIMI_US_API_KEY" ]]; then
     echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com/code/console)" >&2
     return 1
   fi
-  _LCP_PICKER_JSON="$_KIMI_US_PICKER_JSON" _launch_claude \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 _LCP_PICKER_JSON="$_KIMI_US_PICKER_JSON" _launch_claude \
     "$KIMI_US_BASE_URL" \
     "$KIMI_US_API_KEY" \
-    "k3" \
-    "kimi-for-coding" \
+    "k3[1m]" \
+    "kimi-for-coding[1m]" \
     "k3-256k" \
     kimi-us \
     "$@"
@@ -1540,7 +1549,7 @@ lcp-help() {
     deepseek       DeepSeek (opus=V4-Pro, sonnet/haiku=V4.1 Flash)
     deepseekflash  DeepSeek V4.1 Flash on all lanes — ~$0.15 / $0.60 per M
     kimi           Official Kimi Code CLI (Moonshot binary, not a function here)
-    kimi-us        Kimi Code plan inside Claude Code via api.kimi.ai (opus=k3, sonnet=K2.8 Preview, haiku=k3-256k)
+    kimi-us        Kimi Code plan inside Claude Code via api.kimi.ai (opus=k3[1m], sonnet=K2.8 Preview[1m], haiku=k3-256k)
     kimi-china     Kimi K3 / K2.7 Code via moonshot.cn pay-as-you-go (alias kimi-cn)
     qwen           Official Qwen Code CLI (Homebrew binary, not a function here)
     qwen-cc        Qwen Token Plan inside Claude Code (opus=3.8-max, sonnet=3.7-max, haiku=3.8-flash)
