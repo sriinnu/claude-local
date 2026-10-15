@@ -40,11 +40,11 @@ unset -f _lcp_load_keys
 # === PROVIDER ENDPOINTS ===
 # Defaults live here; the `:=` only sets a value if you haven't already, so an
 # endpoint exported earlier in your shell env wins, e.g.
-#   export KIMI_BASE_URL="https://api.moonshot.ai/anthropic"   # flip Kimi to the intl host
+#   export KIMI_US_BASE_URL="https://api.kimi.com/coding"       # flip kimi-us to the China-side host
 # No need to edit the launcher functions to retarget an endpoint.
 : ${ZAI_BASE_URL:=https://api.z.ai/api/anthropic}
 : ${KIMI_BASE_URL:=https://api.moonshot.cn/anthropic}
-: ${KIMI_US_BASE_URL:=https://api.kimi.com/coding}
+: ${KIMI_US_BASE_URL:=https://api.kimi.ai/coding}
 : ${MINIMAX_BASE_URL:=https://api.minimax.io/anthropic}
 : ${DEEPSEEK_BASE_URL:=https://api.deepseek.com/anthropic}
 : ${OPENROUTER_BASE_URL:=https://openrouter.ai/api}
@@ -176,7 +176,7 @@ _launch_claude() {
   # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
   local provider=""
   case "${1:-}" in
-    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi|kimi-us|qwen|geminifree)
+    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi|kimi-cn|kimi-us|qwen|geminifree)
       provider="$1"
       shift
       ;;
@@ -193,8 +193,8 @@ _launch_claude() {
       *z.ai*)              provider="zai" ;;
       *minimax*)           provider="minimax" ;;
       *deepseek*)          provider="deepseek" ;;
-      *moonshot*)          provider="kimi" ;;
-      *api.kimi.com*)      provider="kimi-us" ;;
+      *moonshot*)          provider="kimi-cn" ;;
+      *api.kimi.*)         provider="kimi-us" ;;
       *aliyuncs.com*)      provider="qwen" ;;
       *openrouter*)        provider="openrouter-free" ;;
       *ai-gateway.vercel*) provider="vercel" ;;
@@ -220,6 +220,7 @@ _launch_claude() {
     export ANTHROPIC_BASE_URL="$base_url"
     export ANTHROPIC_AUTH_TOKEN="$auth_token"
     export ANTHROPIC_DEFAULT_OPUS_MODEL="$opus_model"
+    export ANTHROPIC_DEFAULT_FABLE_MODEL="$opus_model"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="$sonnet_model"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
     export ANTHROPIC_MODEL="$opus_model"
@@ -320,53 +321,74 @@ deepseekflash() {
     "$@"
 }
 
-# Kimi (Moonshot AI) — K3 + K2.7 Code, Anthropic-native endpoint.
+# Kimi China (Moonshot Open Platform, moonshot.cn) — K3 + K2.7 Code, Anthropic-native endpoint.
+# The bare `kimi` name is NOT defined here any more: it belongs to Moonshot's official
+# Kimi Code CLI (installed 2026-10-15). This lane is `kimi-china` (`kimi-cn` is an alias).
 # RE-CONFIRMED 2026-09-02: this key is a platform.moonshot.CN key — .cn returns 200,
 # the .ai (international) host still 401s on it. Must be the /anthropic path (NOT /v1,
 # which is the OpenAI-compatible route Claude Code can't speak).
-# Live /v1/models 2026-09-02 serves exactly: kimi-k3, kimi-k2.7-code,
-# kimi-k2.7-code-highspeed, kimi-k2.6. All four smoke-tested 200. (Re-listed 2026-10-12: same four.)
+# Live /v1/models 2026-10-15 serves exactly: kimi-k3, kimi-k2.7-code,
+# kimi-k2.7-code-highspeed, kimi-k2.6 (unchanged since 09-02).
 # Haiku lane runs kimi-k2.7-code-highspeed: same model, ~3.6x faster on a 200-token
 # reply (2.2s vs 8.1s measured 2026-09-02), which is what the background lane wants.
-# STALE NOTE REMOVED: k2.7-code no longer rejects requests that omit extended thinking —
-# a plain call returns 200 now (it still thinks on its own). No need to force it on.
-kimi() {
+#
+# Status 2026-10-15: every model 429s "account … is suspended due to insufficient balance"
+# (type exceeded_current_quota_error). Pay-as-you-go wallet is EMPTY — top up at
+# platform.moonshot.cn, or use `kimi-us` (Kimi Code plan, live again) which serves the same K3.
+kimi-china() {
   _launch_claude \
     "$KIMI_BASE_URL" \
     "$KIMI_API_KEY" \
     "kimi-k3" \
     "kimi-k2.7-code" \
     "kimi-k2.7-code-highspeed" \
+    kimi-cn \
     "$@"
 }
+kimi-cn() { kimi-china "$@"; }
 
-# Kimi US (kimi.com) — Kimi Code subscription endpoint, Anthropic-compatible.
+# Kimi US (Kimi Code plan, kimi.com / kimi.ai) — Anthropic-compatible subscription endpoint.
 # Separate account/key from the moonshot.cn one above: get it from the Kimi Code
-# Console at kimi.com, store as KIMI_US_API_KEY in the login keychain.
-# Docs: https://www.kimi.com/code/docs/en/
-# Models by plan tier (docs re-checked 2026-09-02): kimi-for-coding (all members),
-# kimi-for-coding-highspeed (Allegretto+), k3 (Moderato+; Allegretto+ unlocks the
-# 1M context window), k3-256k (Moderato+, 256k context variant).
-# Opus slot runs k3 (NOTE: the kimi.com id is "k3", not moonshot's "kimi-k3");
-# sonnet/haiku stay on kimi-for-coding. If k3 401s "permission denied", the plan
-# doesn't cover it — drop the opus slot back to kimi-for-coding.
+# Console at kimi.com/code/console, store as KIMI_US_API_KEY in the login keychain.
+# Docs: https://www.kimi.com/code/docs/en/  (Claude Code page: /third-party-tools/claude-code.html)
+# Hosts (docs 2026-10-15): overseas https://api.kimi.ai/coding/ (default here, we're in Vienna),
+# China-side https://api.kimi.com/coding/ — same key works on both, verified 200 on both.
+# Claude Code appends /v1/messages itself; the OpenAI-compatible route is <host>/coding/v1.
+# Models (live /v1/models 2026-10-15, all four smoke-tested 200 on this key):
+#   k3                        K3, 1M ctx (1M needs Pro/Allegretto+), effort low/high/max (default high),
+#                             ~2x the quota of k3-256k. Claude Code 1M form: "k3[1m]".
+#   k3-256k                   K3 at 256k ctx, cheapest-quota K3. Image in, no video.
+#   kimi-for-coding           K2.8 Preview (upgraded in place 2026-09-11, same id), 1M ctx,
+#                             effort low/high/max (default max). Andante/Plus+.
+#   kimi-for-coding-highspeed K2.7 Code HighSpeed, 256k, ~6x output speed at 3x quota. Pro/Allegretto+.
+# NOTE kimi.com ids are "k3"/"k3-256k", not moonshot's "kimi-k3". Use the id, never the display name.
+# Plan tier: highspeed answers 200 for this key, so the plan is Pro/Allegretto+ (1M unlocked).
+# Lanes: opus=k3 (frontier), sonnet=kimi-for-coding (K2.8 Preview, 1M), haiku=k3-256k (cheapest
+# stated quota cost for the background lane; highspeed would burn 3x). Pick k3[1m] or highspeed
+# per-session from /model (picker rows below). A 401 "permission denied" on a model = tier gap.
+# Effort: /effort medium -> Kimi "high" (recommended), xhigh/max -> "max".
+# Quota: one 5h rolling window + one monthly pool (new plans have no weekly). Check remaining at
+# kimi.com/code/console, or `GET https://api.kimi.ai/coding/v1/usages` with the key (Runic reads this).
 #
-# Status 2026-10-12: /v1/models still lists exactly k3, k3-256k, kimi-for-coding,
-# kimi-for-coding-highspeed (ids above still correct), but every model now 403s "Your current
-# subscription does not have access to Kimi Code" — the plan LAPSED (the 09-16 message was the
-# monthly quota; this one is no plan at all). Renew at kimi.com/code/#pricing, or use `kimi`
-# (moonshot.cn) — same K3, that key still works.
+# Status 2026-10-15: plan LIVE again (the 10-12 "does not have access to Kimi Code" 403 was a lapse;
+# renewed since). 5h window 15% used, monthly 0.4% at check time.
+_KIMI_US_PICKER_JSON='{"modelPicker":{"options":[
+{"model":"k3","label":"Kimi K3","description":"256k ctx, effort high"},
+{"model":"k3[1m]","label":"Kimi K3 (1M)","description":"1M ctx, ~2x quota of k3-256k"},
+{"model":"k3-256k","label":"Kimi K3-256k","description":"cheapest K3 quota"},
+{"model":"kimi-for-coding","label":"Kimi K2.8 Preview","description":"1M ctx, effort max"},
+{"model":"kimi-for-coding-highspeed","label":"Kimi K2.7 HighSpeed","description":"~6x speed, 3x quota"}]}}'
 kimi-us() {
   if [[ -z "$KIMI_US_API_KEY" ]]; then
-    echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com)" >&2
+    echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com/code/console)" >&2
     return 1
   fi
-  _launch_claude \
+  _LCP_PICKER_JSON="$_KIMI_US_PICKER_JSON" _launch_claude \
     "$KIMI_US_BASE_URL" \
     "$KIMI_US_API_KEY" \
     "k3" \
     "kimi-for-coding" \
-    "kimi-for-coding" \
+    "k3-256k" \
     kimi-us \
     "$@"
 }
@@ -1517,8 +1539,9 @@ lcp-help() {
     minimax        MiniMax — experimental
     deepseek       DeepSeek (opus=V4-Pro, sonnet/haiku=V4.1 Flash)
     deepseekflash  DeepSeek V4.1 Flash on all lanes — ~$0.15 / $0.60 per M
-    kimi           Kimi K3 / K2.7 Code via moonshot.cn
-    kimi-us        Kimi Code via kimi.com US endpoint (opus=k3, rest=kimi-for-coding)
+    kimi           Official Kimi Code CLI (Moonshot binary, not a function here)
+    kimi-us        Kimi Code plan inside Claude Code via api.kimi.ai (opus=k3, sonnet=K2.8 Preview, haiku=k3-256k)
+    kimi-china     Kimi K3 / K2.7 Code via moonshot.cn pay-as-you-go (alias kimi-cn)
     qwen           Official Qwen Code CLI (Homebrew binary, not a function here)
     qwen-cc        Qwen Token Plan inside Claude Code (opus=3.8-max, sonnet=3.7-max, haiku=3.8-flash)
     qwen-image     Image gen via the plan (qwen-image-3.0-pro default; wan2.7-image[-pro])
