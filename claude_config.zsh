@@ -5,7 +5,7 @@
 #   llm-providers/sweeps/YYYY-MM-DD.md   (one log per model sweep)
 #   llm-providers/probe-lanes.zsh        (probes every lane, prints no keys)
 # This file keeps one dated status line per lane; the long story goes in those notes.
-# When updating model ids (last sweep 2026-10-12), follow the README's "How to run a sweep":
+# When updating model ids (last sweep 2026-10-21), follow the README's "How to run a sweep":
 #   1. zsh probe-lanes.zsh      2. diff against the notes' state table      3. edit ids + the
 #   lane's dated comment + help prices, `orf-update` for the free list      4. zsh -n, re-source,
 #   launch one changed lane      5. write sweeps/<date>.md + refresh the README tables and
@@ -40,16 +40,16 @@ unset -f _lcp_load_keys
 # === PROVIDER ENDPOINTS ===
 # Defaults live here; the `:=` only sets a value if you haven't already, so an
 # endpoint exported earlier in your shell env wins, e.g.
-#   export KIMI_BASE_URL="https://api.moonshot.ai/anthropic"   # flip Kimi to the intl host
+#   export KIMI_US_BASE_URL="https://api.kimi.com/coding"       # flip kimi-us to the China-side host
 # No need to edit the launcher functions to retarget an endpoint.
 : ${ZAI_BASE_URL:=https://api.z.ai/api/anthropic}
 : ${KIMI_BASE_URL:=https://api.moonshot.cn/anthropic}
-: ${KIMI_US_BASE_URL:=https://api.kimi.com/coding}
+: ${KIMI_US_BASE_URL:=https://api.kimi.ai/coding}
 : ${MINIMAX_BASE_URL:=https://api.minimax.io/anthropic}
 : ${DEEPSEEK_BASE_URL:=https://api.deepseek.com/anthropic}
 : ${OPENROUTER_BASE_URL:=https://openrouter.ai/api}
 : ${VAI_BASE_URL:=https://ai-gateway.vercel.sh}
-: ${SILICONFLOW_BASE_URL:=https://api.siliconflow.cn/v1}
+: ${SILICONFLOW_BASE_URL:=https://api.siliconflow.com}   # .com key; .cn 401s on it. Bare host — Claude Code appends /v1/messages
 : ${BIGMODEL_BASE_URL:=https://open.bigmodel.cn/api/paas/v4/}
 : ${QWEN_BASE_URL:=https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic}
 
@@ -176,7 +176,7 @@ _launch_claude() {
   # Allow callers to pass an explicit provider ID so session logging matches downstream provider IDs.
   local provider=""
   case "${1:-}" in
-    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi|kimi-us|qwen|geminifree)
+    zai|minimax|deepseek|vercel|openrouter-free|openrouter-paid|lcp-local|openrouter|siliconflow|kimi|kimi-cn|kimi-us|qwen|geminifree)
       provider="$1"
       shift
       ;;
@@ -193,10 +193,17 @@ _launch_claude() {
       *z.ai*)              provider="zai" ;;
       *minimax*)           provider="minimax" ;;
       *deepseek*)          provider="deepseek" ;;
-      *moonshot*)          provider="kimi" ;;
-      *api.kimi.com*)      provider="kimi-us" ;;
+      *moonshot*)          provider="kimi-cn" ;;
+      *api.kimi.*)         provider="kimi-us" ;;
       *aliyuncs.com*)      provider="qwen" ;;
-      *openrouter*)        provider="openrouter-free" ;;
+      # Free only when the model itself is free; paid lanes (openrouter, fable, glmflash…)
+      # were logging as openrouter-free and skewing its error rate in session_which.py.
+      *openrouter*)
+        if [[ "$opus_model" == *:free || "$opus_model" == openrouter/free ]]; then
+          provider="openrouter-free"
+        else
+          provider="openrouter-paid"
+        fi ;;
       *ai-gateway.vercel*) provider="vercel" ;;
       *localhost*)         provider="lcp-local" ;;
       *127.0.0.1*)         provider="lcp-local" ;;
@@ -220,10 +227,14 @@ _launch_claude() {
     export ANTHROPIC_BASE_URL="$base_url"
     export ANTHROPIC_AUTH_TOKEN="$auth_token"
     export ANTHROPIC_DEFAULT_OPUS_MODEL="$opus_model"
+    export ANTHROPIC_DEFAULT_FABLE_MODEL="$opus_model"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="$sonnet_model"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model"
     export ANTHROPIC_MODEL="$opus_model"
-    export ANTHROPIC_SMALL_FAST_MODEL="$sonnet_model"
+    # Claude Code's helper calls (titles, summaries, classifiers) read SMALL_FAST first and
+    # only fall back to DEFAULT_HAIKU when it is unset — so this must be the haiku slot.
+    # (Was "$sonnet_model" until 2026-10-15, which quietly sent every lane's helper traffic to sonnet.)
+    export ANTHROPIC_SMALL_FAST_MODEL="$haiku_model"
     export API_TIMEOUT_MS="3000000"
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     # Optional per-launch /model picker rows (inline --settings JSON); empty for most providers.
@@ -260,6 +271,8 @@ _launch_claude() {
 # Re-checked 2026-10-12: catalog adds glm-5.3-flashx (OpenRouter prices it $0.37/$1.25 vs flash's
 # $0.02/$1.20 — a speed tier, not a saving; not adopted). ⚠ Every call 429s [1113] "Insufficient
 # balance or no resource package" — the account needs a top-up; the ids themselves are fine.
+# 2026-10-19: catalog unchanged, still 429 [1113]. OpenRouter lists a new glm-5.3-prime ($2.80/$8.80)
+# but api.z.ai 400s it [1211 Unknown Model] — OR-only for now, not adopted.
 zai() {
   _launch_claude \
     "$ZAI_BASE_URL" \
@@ -274,21 +287,45 @@ zai() {
 # ⚠ 2026-09-16: MINIMAX_API_KEY 401s "invalid api key" on both api.minimax.io and the China
 # host api.minimaxi.com — key expired/revoked, not the model id. Rotate it in the keychain.
 # Still 401 on 2026-10-12 (same key). MiniMax-M3 is still their newest on OpenRouter ($0.30/$1.20).
+# 2026-10-19: still 401. New on OpenRouter: minimax-m3.1-flash:free (1M ctx) — it's in the free
+# list now (`orf`); can't check whether api.minimax.io serves an M3.1 id until the key is rotated.
+# 2026-10-20: MiniMax shipped M3.1 Flash (10-19; 1M ctx, "~3x faster, 70% cheaper" per their blurb).
+# platform.minimax.io's Anthropic-compat page now lists exactly two ids: MiniMax-M3 and
+# MiniMax-M3.1-Flash. Key STILL 401 — ids below are from the docs, not smoke-tested.
+# `minimaxflash` added for when the key is rotated; the free path today is `orf` -> minimax-m3.1-flash:free.
 minimax() {
   _launch_claude \
     "$MINIMAX_BASE_URL" \
     "$MINIMAX_API_KEY" \
     "MiniMax-M3" \
-    "MiniMax-M3" \
-    "MiniMax-M3" \
+    "MiniMax-M3.1-Flash" \
+    "MiniMax-M3.1-Flash" \
+    "$@"
+}
+
+# MiniMax M3.1 Flash on every lane — UNVERIFIED (key 401 as of 2026-10-20), id per official docs.
+minimaxflash() {
+  _launch_claude \
+    "$MINIMAX_BASE_URL" \
+    "$MINIMAX_API_KEY" \
+    "MiniMax-M3.1-Flash" \
+    "MiniMax-M3.1-Flash" \
+    "MiniMax-M3.1-Flash" \
     "$@"
 }
 
 # DeepSeek — verified against api.deepseek.com/models + smoke-tested 2026-09-16.
 # Re-verified 2026-10-12: /models still serves exactly deepseek-flash + deepseek-v4-pro, nothing new.
+# 2026-10-19: same two ids, both smoke 200. OpenRouter added a deepseek-v4.1-flash-1017 snapshot
+# ($0.15/$0.60, same as direct); the direct API 400s that slug — keep "deepseek-flash".
+# 2026-10-20: /models still exactly two ids, deepseek-flash smoke 200. Per the 10-17 changelog
+# "deepseek-flash" now serves DeepSeek-V4.1-Flash-1017 (minor update: DeepSWE 74.2 -> 77.0, shorter
+# outputs, faster task completion), same id, same price — nothing to change here. No "V4.1" of
+# Pro; deepseek-v4-pro is still V4-Pro-0813. Same release opened their Search/Fetch API and
+# recommends DeepSeek Harness >= 0.2.1-rc.1 (their agent harness, not relevant to this lane).
 # Live catalog is exactly two ids:
-#   deepseek-v4-pro  -> DeepSeek-V4-Pro-0813   (1M ctx, 384K out, $0.66/$1.98 per M peak)
-#   deepseek-flash   -> DeepSeek-V4.1-Flash    (1M ctx, 384K out, $0.15/$0.60 per M peak, multimodal)
+#   deepseek-v4-pro  -> DeepSeek-V4-Pro-0813        (1M ctx, 384K out, $0.66/$1.98 per M peak)
+#   deepseek-flash   -> DeepSeek-V4.1-Flash-1017    (1M ctx, 384K out, $0.15/$0.60 per M peak, multimodal)
 # V4.1 Flash went GA 2026-09-10; DeepSeek benches it ahead of V4-Pro at ~1/4 the price.
 # There is NO "deepseek-v4.1-flash" slug (400s). "deepseek-v4-flash" still answers but is a
 # temporary legacy alias routed to V4.1 Flash — don't rely on it. Off-peak (outside
@@ -320,53 +357,81 @@ deepseekflash() {
     "$@"
 }
 
-# Kimi (Moonshot AI) — K3 + K2.7 Code, Anthropic-native endpoint.
+# Kimi China (Moonshot Open Platform, moonshot.cn) — K3 + K2.7 Code, Anthropic-native endpoint.
+# The bare `kimi` name is NOT defined here any more: it belongs to Moonshot's official
+# Kimi Code CLI (installed 2026-10-15). This lane is `kimi-china` (`kimi-cn` is an alias).
 # RE-CONFIRMED 2026-09-02: this key is a platform.moonshot.CN key — .cn returns 200,
 # the .ai (international) host still 401s on it. Must be the /anthropic path (NOT /v1,
 # which is the OpenAI-compatible route Claude Code can't speak).
-# Live /v1/models 2026-09-02 serves exactly: kimi-k3, kimi-k2.7-code,
-# kimi-k2.7-code-highspeed, kimi-k2.6. All four smoke-tested 200. (Re-listed 2026-10-12: same four.)
+# Live /v1/models 2026-10-15 serves exactly: kimi-k3, kimi-k2.7-code,
+# kimi-k2.7-code-highspeed, kimi-k2.6 (unchanged since 09-02; same again 2026-10-19).
 # Haiku lane runs kimi-k2.7-code-highspeed: same model, ~3.6x faster on a 200-token
 # reply (2.2s vs 8.1s measured 2026-09-02), which is what the background lane wants.
-# STALE NOTE REMOVED: k2.7-code no longer rejects requests that omit extended thinking —
-# a plain call returns 200 now (it still thinks on its own). No need to force it on.
-kimi() {
+#
+# Status 2026-10-19 (unchanged since 10-15): every model 429s "account … is suspended due to insufficient balance"
+# (type exceeded_current_quota_error). Pay-as-you-go wallet is EMPTY — top up at
+# platform.moonshot.cn, or use `kimi-us` (Kimi Code plan, live again) which serves the same K3.
+kimi-china() {
   _launch_claude \
     "$KIMI_BASE_URL" \
     "$KIMI_API_KEY" \
     "kimi-k3" \
     "kimi-k2.7-code" \
     "kimi-k2.7-code-highspeed" \
+    kimi-cn \
     "$@"
 }
+kimi-cn() { kimi-china "$@"; }
 
-# Kimi US (kimi.com) — Kimi Code subscription endpoint, Anthropic-compatible.
+# Kimi US (Kimi Code plan, kimi.com / kimi.ai) — Anthropic-compatible subscription endpoint.
 # Separate account/key from the moonshot.cn one above: get it from the Kimi Code
-# Console at kimi.com, store as KIMI_US_API_KEY in the login keychain.
-# Docs: https://www.kimi.com/code/docs/en/
-# Models by plan tier (docs re-checked 2026-09-02): kimi-for-coding (all members),
-# kimi-for-coding-highspeed (Allegretto+), k3 (Moderato+; Allegretto+ unlocks the
-# 1M context window), k3-256k (Moderato+, 256k context variant).
-# Opus slot runs k3 (NOTE: the kimi.com id is "k3", not moonshot's "kimi-k3");
-# sonnet/haiku stay on kimi-for-coding. If k3 401s "permission denied", the plan
-# doesn't cover it — drop the opus slot back to kimi-for-coding.
+# Console at kimi.com/code/console, store as KIMI_US_API_KEY in the login keychain.
+# Docs: https://www.kimi.com/code/docs/en/  (Claude Code page: /third-party-tools/claude-code.html)
+# Hosts (docs 2026-10-15): overseas https://api.kimi.ai/coding/ (default here, we're in Vienna),
+# China-side https://api.kimi.com/coding/ — same key works on both, verified 200 on both.
+# Claude Code appends /v1/messages itself; the OpenAI-compatible route is <host>/coding/v1.
+# Models (live /v1/models 2026-10-15, all four smoke-tested 200 on this key):
+#   k3                        K3, 1M ctx (1M needs Pro/Allegretto+), effort low/high/max (default high),
+#                             ~2x the quota of k3-256k. Claude Code 1M form: "k3[1m]" — Claude Code
+#                             strips the tag, sends beta context-1m-2025-08-07 (Kimi answers 200) and
+#                             sizes the window at 1M; bare "k3" is treated as an unknown 200k model
+#                             and auto-compacts at 200k while you still pay k3's quota.
+#   k3-256k                   K3 at 256k ctx, cheapest-quota K3. Image in, no video.
+#   kimi-for-coding           K2.8 Preview (upgraded in place 2026-09-11, same id), 1M ctx,
+#                             effort low/high/max (default max). Andante/Plus+.
+#   kimi-for-coding-highspeed K2.7 Code HighSpeed, 256k, ~6x output speed at 3x quota. Pro/Allegretto+.
+# NOTE kimi.com ids are "k3"/"k3-256k", not moonshot's "kimi-k3". Use the id, never the display name.
+# Plan tier: highspeed answers 200 for this key, so the plan is Pro/Allegretto+ (1M unlocked).
+# Lanes: opus=k3[1m] (frontier), sonnet=kimi-for-coding[1m] (K2.8 Preview), haiku=k3-256k (cheapest
+# stated quota cost; serves `model: haiku` subagents, /model haiku, and the helper calls via
+# SMALL_FAST; highspeed would burn 3x). CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 is set lane-local so
+# the 256k model is sized at 262144 instead of the unknown-model 200k default; [1m] models ignore it.
+# Pick highspeed per-session from /model (picker rows below). A 401 "permission denied" on a model = tier gap.
+# Effort: Claude Code already sends effort "high" by default (Kimi's recommended level);
+# /effort medium -> Kimi "high", xhigh/max -> "max". No CLAUDE_CODE_EFFORT_LEVEL needed.
+# Quota: one 5h rolling window + one monthly pool. This key is on a new-style plan (no weekly
+# block in /usages; legacy Andante/Moderato/Allegretto plans still carry a weekly). Check remaining at
+# kimi.com/code/console, or `GET https://api.kimi.ai/coding/v1/usages` with the key (Runic reads this).
 #
-# Status 2026-10-12: /v1/models still lists exactly k3, k3-256k, kimi-for-coding,
-# kimi-for-coding-highspeed (ids above still correct), but every model now 403s "Your current
-# subscription does not have access to Kimi Code" — the plan LAPSED (the 09-16 message was the
-# monthly quota; this one is no plan at all). Renew at kimi.com/code/#pricing, or use `kimi`
-# (moonshot.cn) — same K3, that key still works.
+# Status 2026-10-15: plan LIVE again (the 10-12 "does not have access to Kimi Code" 403 was a lapse;
+# renewed since). 5h window 15% used, monthly 0.4% at check time.
+# 2026-10-19: /v1/models still the same four ids, all four smoke 200. Nothing newer than K3 yet.
+_KIMI_US_PICKER_JSON='{"modelPicker":{"options":[
+{"model":"k3[1m]","label":"Kimi K3 (1M)","description":"1M ctx, effort high, ~2x quota of k3-256k"},
+{"model":"k3-256k","label":"Kimi K3-256k","description":"256k ctx, cheapest K3 quota"},
+{"model":"kimi-for-coding[1m]","label":"Kimi K2.8 Preview (1M)","description":"1M ctx, effort max"},
+{"model":"kimi-for-coding-highspeed","label":"Kimi K2.7 HighSpeed","description":"256k ctx, ~6x speed, 3x quota"}]}}'
 kimi-us() {
   if [[ -z "$KIMI_US_API_KEY" ]]; then
-    echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com)" >&2
+    echo "✗ KIMI_US_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s KIMI_US_API_KEY -w  (key from the Kimi Code Console at kimi.com/code/console)" >&2
     return 1
   fi
-  _launch_claude \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 _LCP_PICKER_JSON="$_KIMI_US_PICKER_JSON" _launch_claude \
     "$KIMI_US_BASE_URL" \
     "$KIMI_US_API_KEY" \
-    "k3" \
-    "kimi-for-coding" \
-    "kimi-for-coding" \
+    "k3[1m]" \
+    "kimi-for-coding[1m]" \
+    "k3-256k" \
     kimi-us \
     "$@"
 }
@@ -384,6 +449,8 @@ kimi-us() {
 # /v1/messages. (The 09-16 "AccessDenied.Unpurchased" 403 was a lapsed subscription.) Note the
 # plan serves no /v1/models route (404 "Not support") — smoke-test ids, don't list them. If a model 400s, drop
 # opus to qwen3.7-max and haiku to qwen3.6-flash.
+# 2026-10-19: all nine ids still 200. OpenRouter's new qwen3.8-max-prime / qwen3.8-omni-flash 400
+# on the plan — not in the Token Plan table yet.
 # /model picker rows for the plan (schema read from claude 2.1.285: modelPicker.options
 # = [{model,label?,description?,behavesAs?}]). Added to the built-in lineup, not replacing it.
 _QWEN_PICKER_JSON='{"modelPicker":{"options":[
@@ -475,93 +542,121 @@ vai() {
     "$@"
 }
 
-# === SiliconFlow — OpenAI-only, bridged to Claude Code via a local LiteLLM proxy ===
-# ⚠ WIP / NOT WORKING YET: litellm's /v1/messages bridge calls SiliconFlow's /v1/responses
-#   (OpenAI Responses API), which SiliconFlow doesn't serve -> 404. Needs the bridge forced
-#   to /chat/completions (likely via claude-code-router instead of litellm). Don't rely on
-#   this until fixed. Scaffolding + endpoint var are kept so it's a quick finish later.
-# SiliconFlow speaks ONLY the OpenAI API (no /anthropic endpoint), so Claude Code can't
-# hit it directly. This boots a local LiteLLM proxy that translates Anthropic /v1/messages
-# -> SiliconFlow's OpenAI /chat/completions, points Claude Code at localhost, and tears the
-# proxy down on exit. Same local-server lifecycle as lcp.
+# === SiliconFlow (api.siliconflow.com, international) — Anthropic-native endpoint ===
+# Rewritten 2026-10-21: SiliconFlow now serves /v1/messages directly (their own Claude Code
+# guide: docs.siliconflow.com/en/usercases/use-siliconcloud-in-ClaudeCode), so the old LiteLLM
+# bridge (which 404'd on /v1/responses) is gone. Plain _launch_claude, same as deepseek/kimi.
+# Key is a .com key — api.siliconflow.cn 401s on it. No /anthropic suffix: base is the bare host.
+# Free tier: NONE on .com (one-off $1 signup credit only; the free small models live on .cn).
+# Rate limits are per-tier by monthly spend (L0 = 1000 RPM / 40k TPM) -> TPM is the real ceiling.
+#
+# STREAMING MATRIX 2026-10-21 (Claude Code always streams; non-stream curl tests lie here):
+#   OK  text+tools: DeepSeek V4.1-Flash (undated), V4-Pro(-0813), V4-Flash; GLM 5.3/5.3-Flash/5.2/5V-Turbo;
+#                   Kimi K3, K2.6; Qwen3.8-2.4T, 3.6-35B-A3B, 3.6-27B, 3.5-9B, Qwen3-Coder-30B-A3B;
+#                   Hy3, Hy4-preview; Gemma 4 26B/31B; LongCat-2.0; Ling-flash-2.0
+#   BROKEN (do not use in Claude Code):
+#     deepseek-ai/DeepSeek-V4.1-Flash-1017  — every text_delta empty, tool JSON split into 17 blocks
+#                                             with blank id/name -> Bash "command is missing" x15.
+#                                             The undated slug is fine; use that.
+#     moonshotai/Kimi-K2.7-Code, stepfun-ai/Step-3.5-Flash — stream zero text (tools OK)
+#     MiniMaxAI/MiniMax-M3                  — raw <think> leaks into text deltas
+#     Qwen/Qwen3.8-27B                      — tool JSON fragmented across 7 blocks
+#     deepseek-ai/DeepSeek-V3.2, ByteDance-Seed/Seed-OSS-36B — never emit tool_use
+#     openai/gpt-oss-20b/120b               — "Function call is not supported for this model"
+#   Re-run the matrix after SiliconFlow changes anything: lib/ has no helper yet; the one-off was
+#   /v1/messages stream=true, "Reply with exactly: pong" + a Bash tool call, concat the deltas.
 #
 # Usage:
-#   siliconflow                                      # default model (_SF_DEFAULT_MODEL)
-#   siliconflow deepseek-ai/DeepSeek-V3              # any SiliconFlow slug
-#   siliconflow Qwen/Qwen3-Coder-... -p "hi"         # extra args pass through to claude
-# Exact slugs (the model arg must match SiliconFlow exactly):
-#   curl -s https://api.siliconflow.cn/v1/models -H "Authorization: Bearer $SILICONFLOW_API_KEY"
-# Deps: uv tool install 'litellm[proxy]' --python 3.12  (3.14 fails — PyO3 cap)
-_SF_PORT=8777
-_SF_DEFAULT_MODEL="deepseek-ai/DeepSeek-V3"   # change here, or pass a slug as the first arg
-_SF_RUNDIR="${XDG_CACHE_HOME:-$HOME/.cache}/lcp"
-_SF_PIDFILE="$_SF_RUNDIR/siliconflow-litellm.pid"
-_SF_CONFIG="$_SF_RUNDIR/siliconflow-litellm.yaml"
-_SF_LOG="$_SF_RUNDIR/siliconflow-litellm.log"
+#   siliconflow                                   # default: DeepSeek V4.1-Flash (1M ctx)
+#   siliconflow zai-org/GLM-5.3                   # any chat slug from `sf-models`
+#   siliconflow -p "hi"                           # flags pass through to claude
+#   sf-models [grep]                              # live chat-model list; ✗ = broken for Claude Code
+#   sf-models --use <slug> [claude args]          # pick + launch
+# /model inside the session lists the curated rows in _SF_PICKER_JSON (all stream-verified).
+# Prices are USD per M tokens (in/out) from SiliconFlow's model pages 2026-10-21 — approximate.
+_SF_DEFAULT_MODEL="deepseek-ai/DeepSeek-V4.1-Flash"
+# Haiku slot (helpers, /model haiku, `model: haiku` subagents): cheapest stream-clean tool-capable
+# model, 1.5s on the tool smoke test. GLM-5.3-Flash is the smarter alternative ($0.15/$0.50, 5.7s).
+_SF_HAIKU_MODEL="Qwen/Qwen3-Coder-30B-A3B-Instruct"
+_SF_PICKER_JSON='{"modelPicker":{"options":[
+{"model":"deepseek-ai/DeepSeek-V4.1-Flash","label":"DeepSeek V4.1 Flash","description":"1M ctx, ~$0.15/$0.60 — default (NOT the -1017 slug: broken stream)"},
+{"model":"deepseek-ai/DeepSeek-V4-Pro-0813","label":"DeepSeek V4 Pro 0813","description":"1M ctx, ~$1.32/$3.96"},
+{"model":"deepseek-ai/DeepSeek-V4-Flash","label":"DeepSeek V4 Flash","description":"1M ctx, vision, ~$0.13/$0.28 (slow: 26s on smoke test)"},
+{"model":"zai-org/GLM-5.3","label":"GLM 5.3","description":"1M ctx, ~$1.40/$4.40"},
+{"model":"zai-org/GLM-5.3-Flash","label":"GLM 5.3 Flash","description":"1M ctx, vision, ~$0.15/$0.50"},
+{"model":"moonshotai/Kimi-K3","label":"Kimi K3","description":"1M ctx, vision, ~$2.70/$13.50"},
+{"model":"moonshotai/Kimi-K2.6","label":"Kimi K2.6","description":"256k ctx, vision, ~$0.77/$3.40"},
+{"model":"Qwen/Qwen3.8-2.4T-A95B","label":"Qwen3.8 2.4T","description":"1M ctx, ~$2.00/$6.00"},
+{"model":"Qwen/Qwen3.6-35B-A3B","label":"Qwen3.6 35B-A3B","description":"262k ctx, ~$0.20/$1.60"},
+{"model":"tencent/Hy4-preview","label":"Tencent Hy4 preview","description":"price not yet checked"},
+{"model":"Qwen/Qwen3-Coder-30B-A3B-Instruct","label":"Qwen3 Coder 30B-A3B","description":"262k ctx, ~$0.07/$0.28 — haiku lane"}]}}'
 
 siliconflow() {
   if [[ -z "$SILICONFLOW_API_KEY" ]]; then
-    echo "✗ SILICONFLOW_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s SILICONFLOW_API_KEY -w" >&2
+    echo "✗ SILICONFLOW_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s SILICONFLOW_API_KEY -w  (key from cloud.siliconflow.com)" >&2
     return 1
   fi
-  if ! command -v litellm &>/dev/null; then
-    echo "✗ litellm not found. Install: uv tool install 'litellm[proxy]' --python 3.12" >&2
-    return 1
-  fi
-
   # First non-flag arg is the model slug; everything after passes through to claude.
   local model="$_SF_DEFAULT_MODEL"
   if [[ -n "${1:-}" && "$1" != -* ]]; then
     model="$1"; shift
   fi
-
-  mkdir -p "$_SF_RUNDIR"
-
-  # Wildcard route: Claude Code asks for "<slug>", LiteLLM forwards to openai/<slug> at
-  # SiliconFlow — so any slug works with no per-model config. drop_params tolerates
-  # Anthropic-only params the OpenAI backend doesn't accept.
-  cat > "$_SF_CONFIG" <<YAML
-model_list:
-  - model_name: "*"
-    litellm_params:
-      model: "openai/*"
-      api_base: "$SILICONFLOW_BASE_URL"
-      api_key: "os.environ/SILICONFLOW_API_KEY"
-litellm_settings:
-  drop_params: true
-YAML
-
-  # Stop any stale proxy we left running
-  if [[ -f "$_SF_PIDFILE" ]] && kill -0 "$(cat "$_SF_PIDFILE")" 2>/dev/null; then
-    kill "$(cat "$_SF_PIDFILE")" 2>/dev/null; sleep 1
+  if [[ "$model" == "deepseek-ai/DeepSeek-V4.1-Flash-1017" ]]; then
+    echo "⚠ the -1017 slug streams broken on SiliconFlow (empty text, shredded tool calls) — using deepseek-ai/DeepSeek-V4.1-Flash" >&2
+    model="deepseek-ai/DeepSeek-V4.1-Flash"
   fi
+  # 1M-context models (DeepSeek V4.x, GLM 5.3, Kimi K3, Qwen3.8-2.4T) get the full window;
+  # the unknown-model default would size them at 200k.
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 _LCP_PICKER_JSON="$_SF_PICKER_JSON" _launch_claude \
+    "$SILICONFLOW_BASE_URL" \
+    "$SILICONFLOW_API_KEY" \
+    "$model" \
+    "$model" \
+    "$_SF_HAIKU_MODEL" \
+    siliconflow \
+    "$@"
+}
 
-  echo "→ starting LiteLLM proxy (SiliconFlow) on :$_SF_PORT — model: $model"
-  litellm --config "$_SF_CONFIG" --host 127.0.0.1 --port "$_SF_PORT" &>"$_SF_LOG" &
-  echo $! > "$_SF_PIDFILE"
-
-  # Tear the proxy down when this function returns or is interrupted
-  _sf_cleanup() { kill "$(cat "$_SF_PIDFILE" 2>/dev/null)" 2>/dev/null; rm -f "$_SF_PIDFILE" 2>/dev/null; }
-  trap '_sf_cleanup' EXIT INT TERM
-
-  echo -n "  waiting for proxy"
-  local n=0
-  while ! curl -sf "http://127.0.0.1:$_SF_PORT/health/liveliness" &>/dev/null; do
-    echo -n "."; sleep 1; n=$((n+1))
-    [[ $n -gt 60 ]] && { echo " TIMEOUT — check $_SF_LOG"; return 1; }
-  done
-  echo " ready!"; echo ""
-
-  # Claude Code talks Anthropic to the local proxy. Auth token is a dummy — the proxy is
-  # open on localhost (no master key). Model name handed to claude = the SiliconFlow slug.
-  _launch_claude "http://127.0.0.1:$_SF_PORT" "sf-local" "$model" "$model" "$model" siliconflow "$@"
+# Live model list from SiliconFlow. Chat models only (image/video/audio/embedding/rerank filtered
+# out). `sf-models [pattern]` greps; `sf-models --use <slug> [claude args]` launches.
+# /v1/models carries no pricing — check cloud.siliconflow.com/models for the number before a long run.
+sf-models() {
+  if [[ -z "$SILICONFLOW_API_KEY" ]]; then
+    echo "✗ SILICONFLOW_API_KEY not found" >&2; return 1
+  fi
+  if [[ "${1:-}" == "--use" ]]; then
+    shift
+    [[ -z "${1:-}" ]] && { echo "usage: sf-models --use <slug> [claude args]" >&2; return 1; }
+    siliconflow "$@"; return
+  fi
+  local pattern="${1:-}"
+  curl -sf -m 15 "$SILICONFLOW_BASE_URL/v1/models" -H "Authorization: Bearer $SILICONFLOW_API_KEY" \
+    | python3 -I -c '
+import json,sys,re
+skip=re.compile(r"(FLUX|Wan-AI|Qwen-Image|Z-Image|fish-speech|CosyVoice|IndexTTS|Embedding|Reranker)",re.I)
+# Verified broken for Claude Code over /v1/messages stream=true (2026-10-21) — see lane header.
+broken={
+ "deepseek-ai/DeepSeek-V4.1-Flash-1017":"empty text, shredded tool calls (use undated slug)",
+ "moonshotai/Kimi-K2.7-Code":"streams no text","stepfun-ai/Step-3.5-Flash":"streams no text",
+ "MiniMaxAI/MiniMax-M3":"<think> leaks into text","Qwen/Qwen3.8-27B":"tool JSON fragmented",
+ "deepseek-ai/DeepSeek-V3.2":"never calls tools","ByteDance-Seed/Seed-OSS-36B-Instruct":"never calls tools",
+ "openai/gpt-oss-20b":"no function calling","openai/gpt-oss-120b":"no function calling"}
+ids=sorted((m["id"] for m in json.load(sys.stdin)["data"] if not skip.search(m["id"])),key=str.lower)
+pat=sys.argv[1].lower()
+shown=0
+for i in ids:
+    if pat and pat not in i.lower(): continue
+    shown+=1
+    print(f"  ✗ {i}  — {broken[i]}" if i in broken else f"    {i}")
+print(f"\n{shown}/{len(ids)} chat models  (✗ = broken for Claude Code; untested slugs may still misbehave — try `siliconflow <slug> -p pong` first)")
+' "$pattern" || { echo "✗ could not reach $SILICONFLOW_BASE_URL/v1/models (key? network?)" >&2; return 1; }
 }
 
 # OpenRouter cheap-but-good launchers (paid, but pennies — won't queue like free tier).
 # Verify live pricing anytime with `or-models --cheap`.
 
-# GLM 5.3 Flash — $0.02/$1.20 per M, 1M ctx. Re-priced by 2026-10-12: input fell from ~$0.075 but
-# output jumped ~5x from ~$0.25. Fine for read-heavy work; for chatty output qwenflash is ~10x cheaper.
+# GLM 5.3 Flash — ~$0.05/$0.16 per M, 1M ctx. Re-priced again by 2026-10-19: output fell back from
+# $1.20 to $0.16 (input up from $0.02). Now within ~25% of qwenflash on output — usable for chatty work.
 # (replaced glm-4.7-flash 2026-09-02: cheaper output, 6x the context.)
 glmflash() {
   _launch_claude \
@@ -589,6 +684,8 @@ qwenflash() {
 # Gemini 3.1 Flash Lite — ~$0.25/$1.50 per M, 1M ctx. Budget-frontier when you need more brain.
 # (still the cheapest Gemini on OpenRouter, re-checked 2026-09-16. Newer: gemini-3.5-flash-lite
 # ~$0.30/$2.50, gemini-3.8-flash ~$0.75/$3.75 — both pricier, only worth it if you need the brain.)
+# (2026-10-19: still $0.25/$1.50 and still the cheapest. gemini-3.8-flash is now $0.83/$4.12; newest
+# is gemini-4-argon at $2/$10 — frontier pricing, not a flash-lane candidate.)
 geminiflash() {
   _launch_claude \
     "$OPENROUTER_BASE_URL" \
@@ -601,7 +698,7 @@ geminiflash() {
 
 # Gemini FREE tier — your own GEMINI_API_KEY (AI Studio), no OpenRouter, $0.
 # Gemini speaks no Anthropic API, so a local LiteLLM proxy translates (native gemini/* adapter —
-# unlike siliconflow's openai/* route it does NOT hit /v1/responses, so it works). Verified
+# unlike the old siliconflow openai/* route it does NOT hit /v1/responses, so it works). Verified
 # 2026-09-16: plain replies + Claude Code tool calls round-trip fine.
 # Free tier = Flash family only (3.8/3.7/3.6/3.5 Flash, 3.5 Flash-Lite); Pro models 429 with a
 # free_tier quota of zero. Free-tier prompts MAY be used by Google to improve products — keep
@@ -688,27 +785,28 @@ musespark() {
 #   orf openrouter/free                   # use directly (OpenRouter's free-pool router)
 #   orf openrouter/free -p "hi"           # pass extra claude args
 
-# Free model registry (updated 2026-10-12)
+# Free model registry (updated 2026-10-21)
 _OR_FREE_MODELS=(
-  "apodex/apodex-1.1-mini:free                        | Apodex: Apodex 1.1 Mini (free) | ctx:262k"
   "cohere/north-mini-code:free                        | Cohere: North Mini Code (free) | ctx:256k"
   "dots-studio/dots-3-note-preview:free               | Dots Studio: Dots3-Note Preview (free) | ctx:512k"
   "google/gemma-4-26b-a4b-it:free                     | Google: Gemma 4 26B A4B  (free) | ctx:262k"
   "google/gemma-4-31b-it:free                         | Google: Gemma 4 31B (free) | ctx:262k"
   "google/lyria-3-clip-preview                        | Google: Lyria 3 Clip Preview | ctx:1M"
   "google/lyria-3-pro-preview                         | Google: Lyria 3 Pro Preview | ctx:1M"
-  "inclusionai/ling-3.1-flash                         | inclusionAI: Ling 3.1 Flash | ctx:262k"
   "liquid/lfm-2.5-2.6b:free                           | LiquidAI: LFM2.5-2.6B (free) | ctx:65k"
+  "minimax/minimax-m3.1-flash:free                    | MiniMax: MiniMax M3.1 Flash (free) | ctx:1M"
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | NVIDIA: Nemotron 3 Nano Omni (free) | ctx:256k"
   "nvidia/nemotron-3-super-120b-a12b:free             | NVIDIA: Nemotron 3 Super (free) | ctx:262k"
   "nvidia/nemotron-3-ultra-550b-a55b:free             | NVIDIA: Nemotron 3 Ultra (free) | ctx:1M"
   "nvidia/nemotron-3.5-content-safety:free            | NVIDIA: Nemotron 3.5 Content Safety (free) | ctx:128k"
   "nvidia/nemotron-3.5-lightning:free                 | NVIDIA: Nemotron 3.5 Lightning (free) | ctx:1M"
+  "nvidia/nemotron-3.5-super-vl:free                  | NVIDIA: Nemotron 3.5 Super VL (free) | ctx:1M"
   "openrouter/free                                    | Free Models Router        | ctx:200k"
   "poolside/laguna-s-2.1:free                         | Poolside: Laguna S 2.1 (free) | ctx:262k"
   "poolside/laguna-xs-2.1:free                        | Poolside: Laguna XS 2.1 (free) | ctx:262k"
   "thinkingmachines/inkling-small:free                | Thinking Machines: Inkling Small (free) | ctx:1M"
   "thinkingmachines/inkling:free                      | Thinking Machines: Inkling (free) | ctx:1M"
+  "xingchen-agi/xing4.0-29b-a4b:free                  | XingChen: Xing4.0 29B A4B (free) | ctx:262k"
 )
 
 # Probe a free model with a 1-token completion to check if OpenRouter's
@@ -1514,11 +1612,13 @@ lcp-help() {
 
   CLOUD (paid, full price)
     zai            GLM via Z.AI — cost-effective
-    minimax        MiniMax — experimental
-    deepseek       DeepSeek (opus=V4-Pro, sonnet/haiku=V4.1 Flash)
-    deepseekflash  DeepSeek V4.1 Flash on all lanes — ~$0.15 / $0.60 per M
-    kimi           Kimi K3 / K2.7 Code via moonshot.cn
-    kimi-us        Kimi Code via kimi.com US endpoint (opus=k3, rest=kimi-for-coding)
+    minimax        MiniMax (opus=M3, sonnet/haiku=M3.1 Flash) — key 401 since 09-16, rotate first
+    minimaxflash   MiniMax M3.1 Flash on all lanes — unverified until the key is rotated
+    deepseek       DeepSeek (opus=V4-Pro, sonnet/haiku=V4.1 Flash-1017)
+    deepseekflash  DeepSeek V4.1 Flash-1017 on all lanes — ~$0.15 / $0.60 per M
+    kimi           Official Kimi Code CLI (Moonshot binary, not a function here)
+    kimi-us        Kimi Code plan inside Claude Code via api.kimi.ai (opus=k3[1m], sonnet=K2.8 Preview[1m], haiku=k3-256k)
+    kimi-china     Kimi K3 / K2.7 Code via moonshot.cn pay-as-you-go (alias kimi-cn)
     qwen           Official Qwen Code CLI (Homebrew binary, not a function here)
     qwen-cc        Qwen Token Plan inside Claude Code (opus=3.8-max, sonnet=3.7-max, haiku=3.8-flash)
     qwen-image     Image gen via the plan (qwen-image-3.0-pro default; wan2.7-image[-pro])
@@ -1529,11 +1629,11 @@ lcp-help() {
     openrouter     Claude Opus/Sonnet/Haiku 5.5 via OpenRouter
     fable          Claude Fable 5 — premium, 1M ctx, creative work
     vai            Vercel AI Gateway — 280+ models, any creator/model slug
-    siliconflow    OpenAI-only, bridged via local LiteLLM proxy (WIP)
+    siliconflow    SiliconFlow (.com) — DeepSeek V4.1 Flash default, 11 stream-verified rows in /model, 58 chat ids via sf-models
     geminifree     Gemini free tier on your own GEMINI_API_KEY, via local LiteLLM ($0, Flash only)
 
   CLOUD — cheap-but-good (OpenRouter, pennies per session)
-    glmflash       GLM 5.3 Flash          ~$0.02 / $1.20 per M
+    glmflash       GLM 5.3 Flash          ~$0.05 / $0.16 per M
     qwenflash      Qwen3.7 Flash          ~$0.03 / $0.13 per M
     geminiflash    Gemini 3.1 Flash Lite  ~$0.25 / $1.50 per M
     musespark      Meta Muse Spark 1.3    ~$1.25 / $4.25 per M
