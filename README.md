@@ -396,8 +396,8 @@ orf nvidia/nemotron-3-super-120b-a12b:free   # specific model
 | NVIDIA Nemotron 3 Ultra 550B | `nvidia/nemotron-3-ultra-550b-a55b:free` | 1M | Biggest free NVIDIA MoE |
 | NVIDIA Nemotron 3.5 Lightning | `nvidia/nemotron-3.5-lightning:free` | 1M | Speed-tuned |
 | Dots3-Note Preview | `dots-studio/dots-3-note-preview:free` | 512k | Long-context notes/summaries |
-| inclusionAI Ling 3.1 Flash | `inclusionai/ling-3.1-flash` | 262k | $0 but no `:free` suffix — orf re-checks price before launch |
-| Apodex 1.1 Mini | `apodex/apodex-1.1-mini:free` | 262k | New 2026-10 |
+| MiniMax M3.1 Flash | `minimax/minimax-m3.1-flash:free` | 1M | New 2026-10-19 |
+| XingChen Xing4.0 29B A4B | `xingchen-agi/xing4.0-29b-a4b:free` | 262k | New 2026-10-19, MoE 4B active |
 
 #### Smaller / lightweight
 
@@ -453,7 +453,7 @@ Default model mapping:
 
 You can change these in `~/.claude_config.zsh`.
 
-> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi-us`, `kimi-china`, `minimax`, `deepseek`, `deepseekflash`, `fable`, `glmflash`, `qwenflash`, `geminiflash`, `musespark`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
+> **Heads up — model IDs drift.** The shortcut launchers (`openrouter`, `zai`, `kimi-us`, `kimi-china`, `minimax`, `deepseek`, `deepseekflash`, `siliconflow`, `fable`, `glmflash`, `qwenflash`, `geminiflash`, `musespark`) hardcode specific versioned model IDs. When a provider renames or retires one, the launcher just fails at request time with no hint that the ID went stale. `or-models <name>` (and `or-models --free`) read the **live** catalog from the API, so treat them as the source of truth — verify an ID there before trusting a hardcoded shortcut.
 >
 > **Prices drift too, not just IDs.** `musespark` (`meta/muse-spark-1.3`) was briefly free
 > ($0/$0) around 2026-09-02 and got scooped into the `orf` free-model cache with no
@@ -493,6 +493,7 @@ kimi                    # NOT a launcher: Moonshot's official Kimi Code CLI bina
 minimax                 # MiniMax M3 (experimental)
 deepseek                # DeepSeek (V4-Pro main, V4.1 Flash subagents)
 deepseekflash           # DeepSeek V4.1 Flash on every lane
+siliconflow [slug]      # SiliconFlow .com — DeepSeek V4.1 Flash default, /model picker of ~11 verified models, `sf-models` to browse all 58
 fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 ```
 
