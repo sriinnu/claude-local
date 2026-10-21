@@ -1621,6 +1621,9 @@ hf() {
 # llp-stats — session dashboard
 # Tracks sessions, error rates, avg duration, and per-provider breakdown.
 # Usage: llp-stats
+# Probe every lane and write the status cache LLM Bar reads. Script lives in scripts/ (no secrets).
+lane-status() { zsh "${_LCP_DIR}/scripts/lane-status.zsh" --print "$@"; }
+
 llp-stats() {
   [ -f "$_LCP_SESSION_LOG" ] || { echo "No session data yet — run a session first."; return 1; }
   python3 "$_LCP_LIB_DIR/session_stats.py" "$_LCP_SESSION_LOG"
@@ -1736,6 +1739,8 @@ lcp-help() {
                     (--status / --list / --pull / --help for sub-options)
 
   OBSERVABILITY
+    lane-status    Probe every lane (8 tokens each) -> ~/.cache/lcp/lane-status.json; feeds LLM Bar's menu
+                    (zsh scripts/lane-status.zsh --print; launchd runs it daily at 07:30)
     llp-stats      Session dashboard — error rates, avg duration, per-provider
     llp-history    Recent sessions (llp-history 30 / llp-history all)
     llp-which      Suggest a provider for a task (reasoning / fast / creative)
