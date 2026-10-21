@@ -5,7 +5,7 @@
 #   llm-providers/sweeps/YYYY-MM-DD.md   (one log per model sweep)
 #   llm-providers/probe-lanes.zsh        (probes every lane, prints no keys)
 # This file keeps one dated status line per lane; the long story goes in those notes.
-# When updating model ids (last sweep 2026-10-20), follow the README's "How to run a sweep":
+# When updating model ids (last sweep 2026-10-21), follow the README's "How to run a sweep":
 #   1. zsh probe-lanes.zsh      2. diff against the notes' state table      3. edit ids + the
 #   lane's dated comment + help prices, `orf-update` for the free list      4. zsh -n, re-source,
 #   launch one changed lane      5. write sweeps/<date>.md + refresh the README tables and
@@ -1629,7 +1629,7 @@ lcp-help() {
     openrouter     Claude Opus/Sonnet/Haiku 5.5 via OpenRouter
     fable          Claude Fable 5 — premium, 1M ctx, creative work
     vai            Vercel AI Gateway — 280+ models, any creator/model slug
-    siliconflow    SiliconFlow (.com) — DeepSeek V4.1 Flash default, ~20 stream-verified models in /model; sf-models to browse
+    siliconflow    SiliconFlow (.com) — DeepSeek V4.1 Flash default, 11 stream-verified rows in /model, 58 chat ids via sf-models
     geminifree     Gemini free tier on your own GEMINI_API_KEY, via local LiteLLM ($0, Flash only)
 
   CLOUD — cheap-but-good (OpenRouter, pennies per session)
