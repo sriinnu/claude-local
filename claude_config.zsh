@@ -576,8 +576,29 @@ vai() {
 #   Re-run the matrix after SiliconFlow changes anything: lib/ has no helper yet; the one-off was
 #   /v1/messages stream=true, "Reply with exactly: pong" + a Bash tool call, concat the deltas.
 #
+# THINKING IS INVERTED HERE (measured 2026-10-21, Claude Code 2.1.306): Claude Code sends
+#   thinking:{type:adaptive} + its beta header, and DeepSeek/GLM on SiliconFlow read that as
+#   "reasoning OFF" (0 thinking chars, ~300 out tokens). The usual off-switches — Option+T,
+#   MAX_THINKING_TOKENS=0, CLAUDE_CODE_DISABLE_THINKING=1 — just omit the field, and the model falls
+#   back to ITS default = reasoning ON (2.5-3x output tokens, 1.4-2x latency). So: never use those
+#   here. Default lane = non-reasoning (fast, cheap). `siliconflow --think` sends an explicit
+#   thinking:{type:enabled,budget_tokens:16000} via CLAUDE_CODE_EXTRA_BODY (verified on a capture
+#   server: it replaces Claude Code's object verbatim). Direct probe, same prompt: 62 output tokens
+#   adaptive vs 308 enabled — but SiliconFlow streams ZERO thinking_delta for DeepSeek, so the
+#   reasoning is paid for and used, never shown. GLM does stream its thinking.
+#   /effort is a live cost dial either way (low cut reasoning ~60%, shortens answers when off).
+# COST DISPLAY LIES: Claude Code prices unknown ids at an Opus-class rate and ignores cache reads, so
+#   /usage, the statusline $ and --max-budget-usd are ~1000x too high on this lane. Real numbers:
+#   input is nearly free (cache-read $0.003/M, hits 98%+ of the system prompt across sessions),
+#   output is the whole bill. Truthful display needs modelPricing.overrides in managed settings
+#   (/Library/Application Support/ClaudeCode/managed-settings.json; user/project settings ignore
+#   it) — see llm-providers/sweeps/2026-10-21.md before writing one.
+#   The haiku model (Qwen3-Coder) does not cache; irrelevant for helper calls, matters only for
+#   long `model: haiku` subagents.
+#
 # Usage:
-#   siliconflow                                   # default: DeepSeek V4.1-Flash (1M ctx)
+#   siliconflow                                   # default: DeepSeek V4.1-Flash (1M ctx), reasoning OFF
+#   siliconflow --think                           # same model, reasoning ON (budget 16k) — hard problems
 #   siliconflow zai-org/GLM-5.3                   # any chat slug from `sf-models`
 #   siliconflow -p "hi"                           # flags pass through to claude
 #   sf-models [grep]                              # live chat-model list; ✗ = broken for Claude Code
@@ -623,6 +644,15 @@ siliconflow() {
   if [[ -n "${1:-}" && "$1" == */* ]]; then
     model="$1"; shift
   fi
+  # --think (anywhere in the args): explicit reasoning on. See the header for why the normal
+  # Claude Code switches do the opposite here.
+  local -a rest=()
+  local a think=0
+  for a in "$@"; do
+    [[ "$a" == "--think" ]] && { think=1; continue; }
+    rest+=("$a")
+  done
+  set -- "${rest[@]}"
   # Stale-key guard: a shell that was open when the keychain entry was rotated still holds the old
   # value until it re-sources. Probe once (header via fd, so the key is not on the curl argv); on a
   # 401 that is really SiliconFlow's (body carries their "code" field, not a captive portal's),
@@ -649,7 +679,11 @@ siliconflow() {
   fi
   # 1M-context models (DeepSeek V4.x, GLM 5.3, Kimi K3, Qwen3.8-2.4T) get the full window;
   # the unknown-model default would size them at 200k.
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 _LCP_PICKER_JSON="$_SF_PICKER_JSON" _launch_claude \
+  # CLAUDE_CODE_EXTRA_BODY replaces Claude Code's own `thinking` object verbatim; exported only for
+  # this launch. DISABLE_COST_WARNINGS: the $ it would warn about is the Opus-rate fiction above.
+  (( think )) && export CLAUDE_CODE_EXTRA_BODY='{"thinking":{"type":"enabled","budget_tokens":16000}}'
+  (( think )) && echo "🧠 reasoning ON (budget 16k) — billed as output tokens; SiliconFlow does not stream DeepSeek's thinking back" >&2
+  DISABLE_COST_WARNINGS=1 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 _LCP_PICKER_JSON="$_SF_PICKER_JSON" _launch_claude \
     "$SILICONFLOW_BASE_URL" \
     "$SILICONFLOW_API_KEY" \
     "$model" \
@@ -657,6 +691,9 @@ siliconflow() {
     "$_SF_HAIKU_MODEL" \
     siliconflow \
     "$@"
+  local rc=$?
+  (( think )) && unset CLAUDE_CODE_EXTRA_BODY
+  return $rc
 }
 
 # Live model list from SiliconFlow. Chat models only (image/video/audio/embedding/rerank filtered
