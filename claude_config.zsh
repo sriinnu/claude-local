@@ -24,11 +24,16 @@ _LCP_KEYCHAIN_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_
   AI_GATEWAY_API_KEY KIMI_API_KEY KIMI_US_API_KEY GEMINI_API_KEY SILICONFLOW_API_KEY \
   BIGMODEL_API_KEY HUGGING_FACE_API_KEY OLLAMA_API_KEY QWEN_API_KEY JEV_API_KEY)
 _lcp_load_keys() {
-  local var val
+  local var val fails=0
+  # 14 `security` lookups ≈ 0.1–0.2 s per shell on this Mac (measured 2026-10-21); not worth a cache,
+  # and a cache is one more way for a stale value to survive.
   for var in "${_LCP_KEYCHAIN_KEYS[@]}"; do
-    val=$(security find-generic-password -s "$var" -w 2>/dev/null) || continue
+    val=$(security find-generic-password -s "$var" -w 2>/dev/null) || { fails=$((fails+1)); continue; }
     [[ -n "$val" ]] && export "$var=$val"
   done
+  if (( fails == ${#_LCP_KEYCHAIN_KEYS[@]} )); then
+    echo "⚠ [lcp] keychain unreachable (locked? ssh?) — provider keys NOT refreshed; inherited values may be stale" >&2
+  fi
 }
 _lcp_load_keys
 unset -f _lcp_load_keys
@@ -36,7 +41,7 @@ unset -f _lcp_load_keys
 # TypeSafe's SDK reads TYPESAFE_API_KEY, but the keychain entry is JEV_API_KEY
 # (named for the model, not the product) — alias so there's still one secret,
 # one keychain entry, not a duplicate.
-[[ -n "$JEV_API_KEY" && -z "$TYPESAFE_API_KEY" ]] && export TYPESAFE_API_KEY="$JEV_API_KEY"
+[[ -n "${JEV_API_KEY:-}" ]] && export TYPESAFE_API_KEY="$JEV_API_KEY"   # follows the keychain, like the rest
 
 # === PROVIDER ENDPOINTS ===
 # Defaults live here; the `:=` only sets a value if you haven't already, so an
@@ -92,7 +97,9 @@ unset _lcp_preflight  # clean up — only needed at source time
 
 # Internal: known provider API keys to scrub from subshell environments
 # Prevents cross-provider credential leakage (e.g., ZAI key visible to OpenRouter)
-_LCP_PROVIDER_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GATEWAY_API_KEY KIMI_API_KEY KIMI_US_API_KEY SILICONFLOW_API_KEY QWEN_API_KEY ANTHROPIC_API_KEY)
+# Derived from the load list so nothing the keychain exports can reach a third-party lane's subshell
+# (2026-10-21 review: GEMINI/BIGMODEL/HF/OLLAMA/JEV were leaking into every claude process).
+_LCP_PROVIDER_KEYS=("${_LCP_KEYCHAIN_KEYS[@]}" TYPESAFE_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY CLOUDFLARE_API_TOKEN)
 
 # Internal: observability — session log location
 _LCP_SESSION_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/lcp/sessions.jsonl"
@@ -214,7 +221,7 @@ _launch_claude() {
   # Pre-launch health check (non-blocking — just warn)
   _lcp_health_check "$base_url" "$opus_model" "$provider" || true
 
-  echo "→ $provider ($opus_model)"
+  echo "→ $provider ($opus_model) @ ${base_url#https://}"
   echo ""
 
   local start_ts
@@ -240,7 +247,7 @@ _launch_claude() {
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     # Optional per-launch /model picker rows (inline --settings JSON); empty for most providers.
     local -a picker_args=()
-    [[ -n "$_LCP_PICKER_JSON" ]] && picker_args=(--settings "$_LCP_PICKER_JSON")
+    [[ -n "${_LCP_PICKER_JSON:-}" ]] && picker_args=(--settings "$_LCP_PICKER_JSON")
     claude "${picker_args[@]}" "$@"
   )
   local exit_code=$?
@@ -548,6 +555,8 @@ vai() {
 # guide: docs.siliconflow.com/en/usercases/use-siliconcloud-in-ClaudeCode), so the old LiteLLM
 # bridge (which 404'd on /v1/responses) is gone. Plain _launch_claude, same as deepseek/kimi.
 # Key is a .com key — api.siliconflow.cn 401s on it. No /anthropic suffix: base is the bare host.
+# DATA: prompts, CLAUDE.md and repo contents go to SiliconFlow (third party). Same rule as geminifree:
+# keep PHI / financial / legal / client code off this lane. Their retention terms are not recorded here.
 # Free tier: NONE on .com (one-off $1 signup credit only; the free small models live on .cn).
 # Rate limits are per-tier by monthly spend (L0 = 1000 RPM / 40k TPM) -> TPM is the real ceiling.
 #
@@ -586,29 +595,43 @@ _SF_PICKER_JSON='{"modelPicker":{"options":[
 {"model":"zai-org/GLM-5.3","label":"GLM 5.3","description":"1M ctx, ~$1.40/$4.40"},
 {"model":"zai-org/GLM-5.3-Flash","label":"GLM 5.3 Flash","description":"1M ctx, vision, ~$0.15/$0.50"},
 {"model":"moonshotai/Kimi-K3","label":"Kimi K3","description":"1M ctx, vision, ~$2.70/$13.50"},
-{"model":"moonshotai/Kimi-K2.6","label":"Kimi K2.6","description":"256k ctx, vision, ~$0.77/$3.40"},
+{"model":"moonshotai/Kimi-K2.6","label":"Kimi K2.6","description":"256k ctx ⚠ window sized 1M, short sessions only; vision, ~$0.77/$3.40"},
 {"model":"Qwen/Qwen3.8-2.4T-A95B","label":"Qwen3.8 2.4T","description":"1M ctx, ~$2.00/$6.00"},
-{"model":"Qwen/Qwen3.6-35B-A3B","label":"Qwen3.6 35B-A3B","description":"262k ctx, ~$0.20/$1.60"},
-{"model":"tencent/Hy4-preview","label":"Tencent Hy4 preview","description":"price not yet checked"},
-{"model":"Qwen/Qwen3-Coder-30B-A3B-Instruct","label":"Qwen3 Coder 30B-A3B","description":"262k ctx, ~$0.07/$0.28 — haiku lane"}]}}'
+{"model":"Qwen/Qwen3.6-35B-A3B","label":"Qwen3.6 35B-A3B","description":"262k ctx ⚠ window sized 1M, short sessions only; ~$0.20/$1.60"},
+{"model":"tencent/Hy4-preview","label":"Tencent Hy4 preview","description":"ctx + price not yet checked"},
+{"model":"Qwen/Qwen3-Coder-30B-A3B-Instruct","label":"Qwen3 Coder 30B-A3B","description":"262k ctx ⚠ window sized 1M; ~$0.07/$0.28 — haiku lane"}]}}'
+
+# Only one host is valid for this key. The lane moved from api.siliconflow.cn/v1 (LiteLLM days) to
+# the bare .com host on 2026-10-21; `: ${VAR:=}` keeps whatever an older `source` exported, Claude
+# Code then POSTs .cn/v1/v1/messages and reports the 404 as "model may not exist" — cost a morning.
+_sf_fix_base_url() {
+  if [[ "${SILICONFLOW_BASE_URL:-}" != "https://api.siliconflow.com" ]]; then
+    echo "↻ SILICONFLOW_BASE_URL was '${SILICONFLOW_BASE_URL:-unset}' (stale from an older config) — using https://api.siliconflow.com" >&2
+    export SILICONFLOW_BASE_URL="https://api.siliconflow.com"
+  fi
+}
 
 siliconflow() {
-  if [[ -z "$SILICONFLOW_API_KEY" ]]; then
+  if [[ -z "${SILICONFLOW_API_KEY:-}" ]]; then
     echo "✗ SILICONFLOW_API_KEY not found — add it: security add-generic-password -U -a \"\$USER\" -s SILICONFLOW_API_KEY -w  (key from cloud.siliconflow.com)" >&2
     return 1
   fi
-  # First non-flag arg is the model slug; everything after passes through to claude.
+  _sf_fix_base_url
+  # First arg is the model slug iff it looks like one (every SiliconFlow id has a "/"); a bare
+  # prompt like `siliconflow "explain this"` falls through to claude instead of becoming the model.
   local model="$_SF_DEFAULT_MODEL"
-  if [[ -n "${1:-}" && "$1" != -* ]]; then
+  if [[ -n "${1:-}" && "$1" == */* ]]; then
     model="$1"; shift
   fi
-  # Stale-key guard (2026-10-21): a shell opened before the keychain entry was rotated keeps the
-  # old value, and _lcp_load_keys never overwrites a set var — Claude Code then shows "model may
-  # not exist or you may not have access" on the 401. Probe once; on 401 reload from keychain.
-  local probe
-  probe=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$SILICONFLOW_BASE_URL/v1/models" \
-    -H "Authorization: Bearer $SILICONFLOW_API_KEY")
-  if [[ "$probe" == "401" ]]; then
+  # Stale-key guard: a shell that was open when the keychain entry was rotated still holds the old
+  # value until it re-sources. Probe once (header via fd, so the key is not on the curl argv); on a
+  # 401 that is really SiliconFlow's (body carries their "code" field, not a captive portal's),
+  # reload from keychain.
+  local body probe
+  body=$(curl -s -m 4 -w $'\n%{http_code}' "$SILICONFLOW_BASE_URL/v1/models" \
+    -H @<(print -r -- "Authorization: Bearer $SILICONFLOW_API_KEY"))
+  probe=${body##*$'\n'}
+  if [[ "$probe" == "401" && "$body" == *'"code"'* ]]; then
     local kc
     kc=$(security find-generic-password -s SILICONFLOW_API_KEY -w 2>/dev/null)
     if [[ -n "$kc" && "$kc" != "$SILICONFLOW_API_KEY" ]]; then
@@ -640,7 +663,7 @@ siliconflow() {
 # out). `sf-models [pattern]` greps; `sf-models --use <slug> [claude args]` launches.
 # /v1/models carries no pricing — check cloud.siliconflow.com/models for the number before a long run.
 sf-models() {
-  if [[ -z "$SILICONFLOW_API_KEY" ]]; then
+  if [[ -z "${SILICONFLOW_API_KEY:-}" ]]; then
     echo "✗ SILICONFLOW_API_KEY not found" >&2; return 1
   fi
   if [[ "${1:-}" == "--use" ]]; then
@@ -648,9 +671,12 @@ sf-models() {
     [[ -z "${1:-}" ]] && { echo "usage: sf-models --use <slug> [claude args]" >&2; return 1; }
     siliconflow "$@"; return
   fi
-  local pattern="${1:-}"
-  curl -sf -m 15 "$SILICONFLOW_BASE_URL/v1/models" -H "Authorization: Bearer $SILICONFLOW_API_KEY" \
-    | python3 -I -c '
+  _sf_fix_base_url
+  local pattern="${1:-}" body
+  body=$(curl -sf -m 15 "$SILICONFLOW_BASE_URL/v1/models" \
+    -H @<(print -r -- "Authorization: Bearer $SILICONFLOW_API_KEY")) \
+    || { echo "✗ could not reach $SILICONFLOW_BASE_URL/v1/models (key? network?)" >&2; return 1; }
+  print -r -- "$body" | python3 -I -c '
 import json,sys,re
 skip=re.compile(r"(FLUX|Wan-AI|Qwen-Image|Z-Image|fish-speech|CosyVoice|IndexTTS|Embedding|Reranker)",re.I)
 # Verified broken for Claude Code over /v1/messages stream=true (2026-10-21) — see lane header.
@@ -668,7 +694,7 @@ for i in ids:
     shown+=1
     print(f"  ✗ {i}  — {broken[i]}" if i in broken else f"    {i}")
 print(f"\n{shown}/{len(ids)} chat models  (✗ = broken for Claude Code; untested slugs may still misbehave — try `siliconflow <slug> -p pong` first)")
-' "$pattern" || { echo "✗ could not reach $SILICONFLOW_BASE_URL/v1/models (key? network?)" >&2; return 1; }
+' "$pattern"
 }
 
 # OpenRouter cheap-but-good launchers (paid, but pennies — won't queue like free tier).
@@ -1648,7 +1674,7 @@ lcp-help() {
     openrouter     Claude Opus/Sonnet/Haiku 5.5 via OpenRouter
     fable          Claude Fable 5 — premium, 1M ctx, creative work
     vai            Vercel AI Gateway — 280+ models, any creator/model slug
-    siliconflow    SiliconFlow (.com) — DeepSeek V4.1 Flash default, 11 stream-verified rows in /model, 58 chat ids via sf-models
+    siliconflow    SiliconFlow (.com) — DeepSeek V4.1 Flash default, 11 rows in /model, sf-models to browse; third party — no private data
     geminifree     Gemini free tier on your own GEMINI_API_KEY, via local LiteLLM ($0, Flash only)
 
   CLOUD — cheap-but-good (OpenRouter, pennies per session)

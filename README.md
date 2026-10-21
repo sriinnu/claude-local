@@ -493,7 +493,7 @@ kimi                    # NOT a launcher: Moonshot's official Kimi Code CLI bina
 minimax                 # MiniMax M3 (experimental)
 deepseek                # DeepSeek (V4-Pro main, V4.1 Flash subagents)
 deepseekflash           # DeepSeek V4.1 Flash on every lane
-siliconflow [slug]      # SiliconFlow .com — DeepSeek V4.1 Flash default, /model picker of ~11 verified models, `sf-models` to browse all 58
+siliconflow [slug]      # SiliconFlow .com — DeepSeek V4.1 Flash default, /model picker of 11 verified models, `sf-models` to browse all 58. Third party: keep private/client code off it
 fable                   # Claude Fable 5 via OpenRouter (1M ctx, premium)
 ```
 
