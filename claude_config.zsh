@@ -560,21 +560,38 @@ vai() {
 # Free tier: NONE on .com (one-off $1 signup credit only; the free small models live on .cn).
 # Rate limits are per-tier by monthly spend (L0 = 1000 RPM / 40k TPM) -> TPM is the real ceiling.
 #
-# STREAMING MATRIX 2026-10-21 (Claude Code always streams; non-stream curl tests lie here):
-#   OK  text+tools: DeepSeek V4.1-Flash (undated), V4-Pro(-0813), V4-Flash; GLM 5.3/5.3-Flash/5.2/5V-Turbo;
-#                   Kimi K3, K2.6; Qwen3.8-2.4T, 3.6-35B-A3B, 3.6-27B, 3.5-9B, Qwen3-Coder-30B-A3B;
-#                   Hy3, Hy4-preview; Gemma 4 26B/31B; LongCat-2.0; Ling-flash-2.0
+# STREAMING MATRIX 2026-10-21 (Claude Code always streams; non-stream curl tests lie here, and so
+# does a SINGLE-TURN stream test — see V4.1-Flash below):
+#   OK  text+tools, single AND multi-turn: GLM 5.3-Flash (default), DeepSeek V4-Flash, Kimi K3,
+#                   Qwen3-Coder-30B-A3B (haiku slot). 6-30 runs each of the full Claude Code request
+#                   shape (thinking field, beta header, 43 tools, 250k system, prior tool_use/tool_result
+#                   turns): zero blank tool blocks.
+#   OK  single-turn only, not re-tested with tool history: V4-Pro(-0813); GLM 5.2/5V-Turbo; Kimi K2.6;
+#                   Qwen3.8-2.4T, 3.6-27B, 3.5-9B; Hy3, Hy4-preview; Gemma 4 26B/31B; LongCat-2.0; Ling-flash-2.0
 #   BROKEN (do not use in Claude Code):
+#     deepseek-ai/DeepSeek-V4.1-Flash       — MULTI-TURN. Once the history holds one tool_use/tool_result
+#                                             pair, SiliconFlow's Anthropic translator starts the next
+#                                             tool_use block with id:"" name:"" (the JSON args stream
+#                                             fine). 8/10 with Claude Code's thinking field, 10/10 with
+#                                             thinking:disabled, 0-60% with the field omitted. Claude Code
+#                                             logs `No such tool available:` and the turn ends as
+#                                             "[Tool use interrupted]". The same request on their
+#                                             /v1/chat/completions is 8/8 clean (why opencode is fine).
+#                                             Single-turn smoke passes — that's how it was the lane
+#                                             default until 2026-10-21 afternoon (Petal session: 41 of
+#                                             92 tool calls blank).
 #     deepseek-ai/DeepSeek-V4.1-Flash-1017  — every text_delta empty, tool JSON split into 17 blocks
 #                                             with blank id/name -> Bash "command is missing" x15.
-#                                             The undated slug is fine; use that.
+#     zai-org/GLM-5.3                       — 400 code 20015 "field 'stop' must be a array, got: null"
+#                                             on about half the tool-history requests (translator bug)
 #     moonshotai/Kimi-K2.7-Code, stepfun-ai/Step-3.5-Flash — stream zero text (tools OK)
 #     MiniMaxAI/MiniMax-M3                  — raw <think> leaks into text deltas
-#     Qwen/Qwen3.8-27B                      — tool JSON fragmented across 7 blocks
+#     Qwen/Qwen3.8-27B, Qwen/Qwen3.6-35B-A3B — tool JSON fragmented across blocks (3.6-35B: 7 blocks, 6 blank)
 #     deepseek-ai/DeepSeek-V3.2, ByteDance-Seed/Seed-OSS-36B — never emit tool_use
 #     openai/gpt-oss-20b/120b               — "Function call is not supported for this model"
-#   Re-run the matrix after SiliconFlow changes anything: lib/ has no helper yet; the one-off was
-#   /v1/messages stream=true, "Reply with exactly: pong" + a Bash tool call, concat the deltas.
+#   Re-run after SiliconFlow changes anything: `python3 -I scripts/sf-stream-matrix.py <slug> <runs>`
+#   (single-turn baseline, each Claude Code trait alone, the full shape, tool-history variants;
+#   `loo` = leave-one-out bisect). probe-lanes.zsh runs the single- and multi-turn stream legs.
 #
 # THINKING IS INVERTED HERE (measured 2026-10-21, Claude Code 2.1.306): Claude Code sends
 #   thinking:{type:adaptive} + its beta header, and DeepSeek/GLM on SiliconFlow read that as
@@ -597,28 +614,30 @@ vai() {
 #   long `model: haiku` subagents.
 #
 # Usage:
-#   siliconflow                                   # default: DeepSeek V4.1-Flash (1M ctx), reasoning OFF
+#   siliconflow                                   # default: GLM 5.3 Flash (1M ctx), reasoning OFF
 #   siliconflow --think                           # same model, reasoning ON (budget 16k) — hard problems
-#   siliconflow zai-org/GLM-5.3                   # any chat slug from `sf-models`
+#   siliconflow deepseek-ai/DeepSeek-V4-Flash     # fastest clean lane: 2-4 s/turn, ~$0.13/$0.28, caches
+#   siliconflow moonshotai/Kimi-K3                # any chat slug from `sf-models`
 #   siliconflow -p "hi"                           # flags pass through to claude
 #   sf-models [grep]                              # live chat-model list; ✗ = broken for Claude Code
 #   sf-models --use <slug> [claude args]          # pick + launch
 # /model inside the session lists the curated rows in _SF_PICKER_JSON (all stream-verified).
 # Prices are USD per M tokens (in/out) from SiliconFlow's model pages 2026-10-21 — approximate.
-_SF_DEFAULT_MODEL="deepseek-ai/DeepSeek-V4.1-Flash"
+# Default moved 2026-10-21 pm from DeepSeek-V4.1-Flash (multi-turn tool bug above) to GLM-5.3-Flash:
+# 30/30 clean on the worst request shapes, prompt-caches (15360/15366 cache-read on the 2nd call —
+# the morning note saying GLM has no cache was wrong), streams its thinking back. Slower than V4.1
+# (7 s warm / 17 s cold vs ~3 s); DeepSeek-V4-Flash is the fast alternative, also clean.
+_SF_DEFAULT_MODEL="zai-org/GLM-5.3-Flash"
 # Haiku slot (helpers, /model haiku, `model: haiku` subagents): cheapest stream-clean tool-capable
 # model, 1.5s on the tool smoke test. GLM-5.3-Flash is the smarter alternative ($0.15/$0.50, 5.7s).
 _SF_HAIKU_MODEL="Qwen/Qwen3-Coder-30B-A3B-Instruct"
 _SF_PICKER_JSON='{"modelPicker":{"options":[
-{"model":"deepseek-ai/DeepSeek-V4.1-Flash","label":"DeepSeek V4.1 Flash","description":"1M ctx, ~$0.15/$0.60 — default (NOT the -1017 slug: broken stream)"},
-{"model":"deepseek-ai/DeepSeek-V4-Pro-0813","label":"DeepSeek V4 Pro 0813","description":"1M ctx, ~$1.32/$3.96"},
-{"model":"deepseek-ai/DeepSeek-V4-Flash","label":"DeepSeek V4 Flash","description":"1M ctx, vision, ~$0.13/$0.28 (slow: 26s on smoke test)"},
-{"model":"zai-org/GLM-5.3","label":"GLM 5.3","description":"1M ctx, ~$1.40/$4.40"},
-{"model":"zai-org/GLM-5.3-Flash","label":"GLM 5.3 Flash","description":"1M ctx, vision, ~$0.15/$0.50"},
-{"model":"moonshotai/Kimi-K3","label":"Kimi K3","description":"1M ctx, vision, ~$2.70/$13.50"},
+{"model":"zai-org/GLM-5.3-Flash","label":"GLM 5.3 Flash","description":"1M ctx, vision, ~$0.15/$0.50 — default; multi-turn tools verified 30/30"},
+{"model":"deepseek-ai/DeepSeek-V4-Flash","label":"DeepSeek V4 Flash","description":"1M ctx, vision, ~$0.13/$0.28 — fastest clean lane (2-4 s/turn), caches"},
+{"model":"deepseek-ai/DeepSeek-V4-Pro-0813","label":"DeepSeek V4 Pro 0813","description":"1M ctx, ~$1.32/$3.96 (multi-turn tools not re-tested)"},
+{"model":"moonshotai/Kimi-K3","label":"Kimi K3","description":"1M ctx, vision, ~$2.70/$13.50; multi-turn tools verified"},
 {"model":"moonshotai/Kimi-K2.6","label":"Kimi K2.6","description":"256k ctx ⚠ window sized 1M, short sessions only; vision, ~$0.77/$3.40"},
 {"model":"Qwen/Qwen3.8-2.4T-A95B","label":"Qwen3.8 2.4T","description":"1M ctx, ~$2.00/$6.00"},
-{"model":"Qwen/Qwen3.6-35B-A3B","label":"Qwen3.6 35B-A3B","description":"262k ctx ⚠ window sized 1M, short sessions only; ~$0.20/$1.60"},
 {"model":"tencent/Hy4-preview","label":"Tencent Hy4 preview","description":"ctx + price not yet checked"},
 {"model":"Qwen/Qwen3-Coder-30B-A3B-Instruct","label":"Qwen3 Coder 30B-A3B","description":"262k ctx ⚠ window sized 1M; ~$0.07/$0.28 — haiku lane"}]}}'
 
@@ -673,16 +692,17 @@ siliconflow() {
       return 1
     fi
   fi
-  if [[ "$model" == "deepseek-ai/DeepSeek-V4.1-Flash-1017" ]]; then
-    echo "⚠ the -1017 slug streams broken on SiliconFlow (empty text, shredded tool calls) — using deepseek-ai/DeepSeek-V4.1-Flash" >&2
-    model="deepseek-ai/DeepSeek-V4.1-Flash"
-  fi
+  case "$model" in
+    deepseek-ai/DeepSeek-V4.1-Flash|deepseek-ai/DeepSeek-V4.1-Flash-1017)
+      echo "⚠ $model streams broken tool calls on SiliconFlow (blank id/name once the history has a tool turn; -1017 also empties text) — using $_SF_DEFAULT_MODEL" >&2
+      model="$_SF_DEFAULT_MODEL" ;;
+  esac
   # 1M-context models (DeepSeek V4.x, GLM 5.3, Kimi K3, Qwen3.8-2.4T) get the full window;
   # the unknown-model default would size them at 200k.
   # CLAUDE_CODE_EXTRA_BODY replaces Claude Code's own `thinking` object verbatim; exported only for
   # this launch. DISABLE_COST_WARNINGS: the $ it would warn about is the Opus-rate fiction above.
   (( think )) && export CLAUDE_CODE_EXTRA_BODY='{"thinking":{"type":"enabled","budget_tokens":16000}}'
-  (( think )) && echo "🧠 reasoning ON (budget 16k) — billed as output tokens; SiliconFlow does not stream DeepSeek's thinking back" >&2
+  (( think )) && echo "🧠 reasoning ON (budget 16k) — billed as output tokens; SiliconFlow streams GLM's thinking back, not DeepSeek's" >&2
   DISABLE_COST_WARNINGS=1 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 _LCP_PICKER_JSON="$_SF_PICKER_JSON" _launch_claude \
     "$SILICONFLOW_BASE_URL" \
     "$SILICONFLOW_API_KEY" \
@@ -718,9 +738,12 @@ import json,sys,re
 skip=re.compile(r"(FLUX|Wan-AI|Qwen-Image|Z-Image|fish-speech|CosyVoice|IndexTTS|Embedding|Reranker)",re.I)
 # Verified broken for Claude Code over /v1/messages stream=true (2026-10-21) — see lane header.
 broken={
- "deepseek-ai/DeepSeek-V4.1-Flash-1017":"empty text, shredded tool calls (use undated slug)",
+ "deepseek-ai/DeepSeek-V4.1-Flash":"blank tool id/name after the first tool turn (use GLM-5.3-Flash or V4-Flash)",
+ "deepseek-ai/DeepSeek-V4.1-Flash-1017":"empty text, shredded tool calls",
+ "zai-org/GLM-5.3":"400 stop-must-be-array on tool-history requests",
  "moonshotai/Kimi-K2.7-Code":"streams no text","stepfun-ai/Step-3.5-Flash":"streams no text",
  "MiniMaxAI/MiniMax-M3":"<think> leaks into text","Qwen/Qwen3.8-27B":"tool JSON fragmented",
+ "Qwen/Qwen3.6-35B-A3B":"tool JSON fragmented, blank ids",
  "deepseek-ai/DeepSeek-V3.2":"never calls tools","ByteDance-Seed/Seed-OSS-36B-Instruct":"never calls tools",
  "openai/gpt-oss-20b":"no function calling","openai/gpt-oss-120b":"no function calling"}
 ids=sorted((m["id"] for m in json.load(sys.stdin)["data"] if not skip.search(m["id"])),key=str.lower)
