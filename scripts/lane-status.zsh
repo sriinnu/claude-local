@@ -84,7 +84,7 @@ probe kimi-us     https://api.kimi.ai/coding                                    
 probe qwen-cc     https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic QWEN_API_KEY      qwen3.8-flash alibaba &
 probe openrouter  https://openrouter.ai/api                                        OPENROUTER_API_KEY  anthropic/claude-haiku-5.5 openrouter &
 probe vai         https://ai-gateway.vercel.sh                                     AI_GATEWAY_API_KEY  anthropic/claude-haiku-5.5 vercel &
-probe siliconflow https://api.siliconflow.com                                      SILICONFLOW_API_KEY deepseek-ai/DeepSeek-V4.1-Flash siliconflow &
+probe siliconflow https://api.siliconflow.com                                      SILICONFLOW_API_KEY zai-org/GLM-5.3-Flash siliconflow &
 probe_gemini &
 wait
 
