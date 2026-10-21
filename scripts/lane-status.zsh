@@ -28,13 +28,14 @@ for var in ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY AI_GA
   KEY[$var]=$(security find-generic-password -s "$var" -w 2>/dev/null || true)
 done
 
-# probe <id> <base> <keyvar> <model>   -> writes one JSON line to $TMP/<id>.json
+# probe <id> <base> <keyvar> <model> <kosha-provider>   -> writes one JSON line to $TMP/<id>.json
+# kosha-provider = providerId in ~/.kosha/registry.json, so LLM Bar can show the right price row.
 TMP=$(mktemp -d -t lane-status)
 probe() {
-  local id=$1 base=$2 keyvar=$3 model=$4 key=${KEY[$3]:-}
+  local id=$1 base=$2 keyvar=$3 model=$4 kprov=${5:-} key=${KEY[$3]:-}
   local ms code body
   if [[ -z "$key" ]]; then
-    print -r -- "{\"id\":\"$id\",\"status\":\"nokey\",\"http\":0,\"ms\":0,\"model\":\"$model\",\"detail\":\"no $keyvar in keychain\"}" > "$TMP/$id.json"; return
+    print -r -- "{\"id\":\"$id\",\"status\":\"nokey\",\"http\":0,\"ms\":0,\"model\":\"$model\",\"kosha_provider\":\"$kprov\",\"detail\":\"no $keyvar in keychain\"}" > "$TMP/$id.json"; return
   fi
   local t0=$EPOCHREALTIME
   body=$(curl -s -m 25 -w $'\n%{http_code}' "$base/v1/messages" \
@@ -44,7 +45,7 @@ probe() {
   ms=$(printf "%.0f" $(( (EPOCHREALTIME - t0) * 1000 ))); code=${body##*$'\n'}; body=${body%$'\n'*}
   LS_BODY="$body" python3 -I -c '
 import sys,json,re,os
-id_,code,ms,model=sys.argv[1],int(sys.argv[2] or 0),int(sys.argv[3]),sys.argv[4]
+id_,code,ms,model,kprov=sys.argv[1],int(sys.argv[2] or 0),int(sys.argv[3]),sys.argv[4],sys.argv[5]
 raw=os.environ.get("LS_BODY","")
 try: d=json.loads(raw)
 except Exception: d={}
@@ -62,28 +63,28 @@ elif code==402 or (code in (429,400) and re.search(r"balance|quota|insufficient|
 elif code==429: status="ratelimit"
 elif code==0 or code>=500: status="down"
 else: status="error"
-print(json.dumps({"id":id_,"status":status,"http":code,"ms":ms,"model":model,"detail":re.sub(r"\b(sk|ak|ek|key)-[A-Za-z0-9_-]{4,}[^ ]*","[key]",msg)[:160]}))
-' "$id" "$code" "$ms" "$model" > "$TMP/$id.json"
+print(json.dumps({"id":id_,"status":status,"http":code,"ms":ms,"model":model,"kosha_provider":kprov,"detail":re.sub(r"\b(sk|ak|ek|key)-[A-Za-z0-9_-]{4,}[^ ]*","[key]",msg)[:160]}))
+' "$id" "$code" "$ms" "$model" "$kprov" > "$TMP/$id.json"
 }
 # Gemini speaks no Anthropic API; the free-tier lane goes through LiteLLM. Probe the key directly.
 probe_gemini() {
   local key=${KEY[GEMINI_API_KEY]:-}
-  if [[ -z "$key" ]]; then print -r -- '{"id":"geminifree","status":"nokey","http":0,"ms":0,"model":"gemini-3.5-flash-lite","detail":"no GEMINI_API_KEY in keychain"}' > "$TMP/geminifree.json"; return; fi
+  if [[ -z "$key" ]]; then print -r -- '{"id":"geminifree","status":"nokey","http":0,"ms":0,"model":"gemini-3.5-flash-lite","kosha_provider":"google","detail":"no GEMINI_API_KEY in keychain"}' > "$TMP/geminifree.json"; return; fi
   local code; code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' -H @<(print -r -- "x-goog-api-key: $key") "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1")
   local st=down; [[ $code == 200 ]] && st=ok; [[ $code == 401 || $code == 403 || $code == 400 ]] && st=auth; [[ $code == 429 ]] && st=ratelimit
-  print -r -- "{\"id\":\"geminifree\",\"status\":\"$st\",\"http\":$code,\"ms\":0,\"model\":\"gemini-3.5-flash-lite\",\"detail\":\"models list\"}" > "$TMP/geminifree.json"
+  print -r -- "{\"id\":\"geminifree\",\"status\":\"$st\",\"http\":$code,\"ms\":0,\"model\":\"gemini-3.5-flash-lite\",\"kosha_provider\":\"google\",\"detail\":\"models list\"}" > "$TMP/geminifree.json"
 }
 
 # One probe per distinct (endpoint,key); lanes listed in SHARES inherit it.
-probe zai         https://api.z.ai/api/anthropic                                   ZAI_API_KEY         glm-5.3-flash &
-probe minimax     https://api.minimax.io/anthropic                                 MINIMAX_API_KEY     MiniMax-M3.1-Flash &
-probe deepseek    https://api.deepseek.com/anthropic                               DEEPSEEK_API_KEY    deepseek-flash &
-probe kimi-china  https://api.moonshot.cn/anthropic                                KIMI_API_KEY        kimi-k2.7-code-highspeed &
-probe kimi-us     https://api.kimi.ai/coding                                       KIMI_US_API_KEY     k3-256k &
-probe qwen-cc     https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic QWEN_API_KEY      qwen3.8-flash &
-probe openrouter  https://openrouter.ai/api                                        OPENROUTER_API_KEY  anthropic/claude-haiku-5.5 &
-probe vai         https://ai-gateway.vercel.sh                                     AI_GATEWAY_API_KEY  anthropic/claude-haiku-5.5 &
-probe siliconflow https://api.siliconflow.com                                      SILICONFLOW_API_KEY deepseek-ai/DeepSeek-V4.1-Flash &
+probe zai         https://api.z.ai/api/anthropic                                   ZAI_API_KEY         glm-5.3-flash glm &
+probe minimax     https://api.minimax.io/anthropic                                 MINIMAX_API_KEY     MiniMax-M3.1-Flash minimax &
+probe deepseek    https://api.deepseek.com/anthropic                               DEEPSEEK_API_KEY    deepseek-flash deepseek &
+probe kimi-china  https://api.moonshot.cn/anthropic                                KIMI_API_KEY        kimi-k2.7-code-highspeed moonshot-cn &
+probe kimi-us     https://api.kimi.ai/coding                                       KIMI_US_API_KEY     k3-256k "" &
+probe qwen-cc     https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic QWEN_API_KEY      qwen3.8-flash alibaba &
+probe openrouter  https://openrouter.ai/api                                        OPENROUTER_API_KEY  anthropic/claude-haiku-5.5 openrouter &
+probe vai         https://ai-gateway.vercel.sh                                     AI_GATEWAY_API_KEY  anthropic/claude-haiku-5.5 vercel &
+probe siliconflow https://api.siliconflow.com                                      SILICONFLOW_API_KEY deepseek-ai/DeepSeek-V4.1-Flash siliconflow &
 probe_gemini &
 wait
 
