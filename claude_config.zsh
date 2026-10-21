@@ -17,14 +17,15 @@
 #   security add-generic-password -U -a "$USER" -s KIMI_US_API_KEY -w   # prompts for value
 #   security delete-generic-password -s KIMI_US_API_KEY                 # remove
 # GUI: Keychain Access app -> login keychain -> search the var name.
-# A var already exported in the environment wins — keychain only fills what's unset.
+# Keychain WINS over anything already exported (since 2026-10-21): keys are always rotated in the
+# keychain, so a value inherited from an older shell is by definition stale. Vars the keychain
+# doesn't have are left alone, so a one-off `FOO_API_KEY=... lane` override still works.
 _LCP_KEYCHAIN_KEYS=(ZAI_API_KEY MINIMAX_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY \
   AI_GATEWAY_API_KEY KIMI_API_KEY KIMI_US_API_KEY GEMINI_API_KEY SILICONFLOW_API_KEY \
   BIGMODEL_API_KEY HUGGING_FACE_API_KEY OLLAMA_API_KEY QWEN_API_KEY JEV_API_KEY)
 _lcp_load_keys() {
   local var val
   for var in "${_LCP_KEYCHAIN_KEYS[@]}"; do
-    [[ -n "${(P)var}" ]] && continue
     val=$(security find-generic-password -s "$var" -w 2>/dev/null) || continue
     [[ -n "$val" ]] && export "$var=$val"
   done
@@ -600,6 +601,24 @@ siliconflow() {
   local model="$_SF_DEFAULT_MODEL"
   if [[ -n "${1:-}" && "$1" != -* ]]; then
     model="$1"; shift
+  fi
+  # Stale-key guard (2026-10-21): a shell opened before the keychain entry was rotated keeps the
+  # old value, and _lcp_load_keys never overwrites a set var — Claude Code then shows "model may
+  # not exist or you may not have access" on the 401. Probe once; on 401 reload from keychain.
+  local probe
+  probe=$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$SILICONFLOW_BASE_URL/v1/models" \
+    -H "Authorization: Bearer $SILICONFLOW_API_KEY")
+  if [[ "$probe" == "401" ]]; then
+    local kc
+    kc=$(security find-generic-password -s SILICONFLOW_API_KEY -w 2>/dev/null)
+    if [[ -n "$kc" && "$kc" != "$SILICONFLOW_API_KEY" ]]; then
+      export SILICONFLOW_API_KEY="$kc"
+      echo "↻ SILICONFLOW_API_KEY in this shell was stale — reloaded from keychain" >&2
+    else
+      echo "✗ SiliconFlow rejects this key (401). Rotate it at cloud.siliconflow.com, then:" >&2
+      echo "  security add-generic-password -U -a \"\$USER\" -s SILICONFLOW_API_KEY -w" >&2
+      return 1
+    fi
   fi
   if [[ "$model" == "deepseek-ai/DeepSeek-V4.1-Flash-1017" ]]; then
     echo "⚠ the -1017 slug streams broken on SiliconFlow (empty text, shredded tool calls) — using deepseek-ai/DeepSeek-V4.1-Flash" >&2
