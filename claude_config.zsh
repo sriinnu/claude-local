@@ -1776,3 +1776,61 @@ lcp-help() {
   Run any command with no args to see its own usage where it has one.
 EOF
 }
+
+# ─── Anthropic API credits (console key) ─────────────────────────────────────────────────────
+# DATA RULE: medical, financial, legal and identity material NEVER goes through `ask`,
+# `claude-api` or any hosted lane in this file. Local models only (Ollama / llama.cpp, ~/Models).
+# Free credits don't change that. Full note: ~/Sriinnu/Personal/harness-docs/ai-keys-and-data-routing.md
+# Kept OUT of the global env on purpose: if ANTHROPIC_API_KEY is exported, plain `claude` bills
+# API credits instead of the subscription. The key is read from the keychain per call only.
+#   store once:  security add-generic-password -U -a "$USER" -s ANTHROPIC_API_KEY -w
+#   claude-api            → Claude Code, billed to API credits (plain `claude` stays on subscription)
+#   ask "question"        → one-shot answer in the terminal; also: cat file | ask "summarize"
+#   ASK_MODEL=claude-opus-5-5 ask "..."   (default: claude-sonnet-5-5)
+_lcp_anthropic_key() {
+  security find-generic-password -s ANTHROPIC_API_KEY -w 2>/dev/null && return 0
+  echo "⚠ no ANTHROPIC_API_KEY in keychain. Store it: security add-generic-password -U -a \"\$USER\" -s ANTHROPIC_API_KEY -w" >&2
+  return 1
+}
+# apiKeyHelper, not ANTHROPIC_API_KEY: an env key that was once declined at Claude Code's prompt is
+# ignored in interactive mode, which silently falls back to the subscription. Check with /status.
+_CLAUDE_API_UNSET=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL
+  ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL)
+_CLAUDE_API_SETTINGS='{"apiKeyHelper":"security find-generic-password -s ANTHROPIC_API_KEY -w"}'
+# A second --settings replaces ours, dropping apiKeyHelper: the session would quietly bill the subscription.
+_claude_api_check_args() {
+  (( ! ${@[(I)--settings*]} )) && return 0
+  echo "⚠ --settings would drop the API key helper and bill the subscription. Not running." >&2
+  return 1
+}
+claude-api() {
+  _claude_api_check_args "$@" || return 1
+  _lcp_anthropic_key >/dev/null || return 1
+  ( unset "${_CLAUDE_API_UNSET[@]}"
+    command claude --settings "$_CLAUDE_API_SETTINGS" "$@" )
+}
+# cac: chat on API credits; flags pass through to claude. Wrapper and tests: scripts/cac.py, tests/test_cac.py.
+# Promo credits that exclude Claude Code reject interactive `claude-api` but accept -p (seen 2026-11-02).
+cac() {
+  _claude_api_check_args "$@" || return 1
+  _lcp_anthropic_key >/dev/null || return 1
+  ( unset "${_CLAUDE_API_UNSET[@]}"
+    exec python3 -I "${_LCP_DIR}/scripts/cac.py" --settings "$_CLAUDE_API_SETTINGS" "$@" )
+}
+ask() {
+  local k prompt="$*" piped body resp
+  [[ -z "$prompt" && -t 0 ]] && { echo 'usage: ask "question"   |   cat file | ask "what to do with it"' >&2; return 1; }
+  k=$(_lcp_anthropic_key) || return 1
+  if [[ ! -t 0 ]]; then piped=$(cat); prompt="${prompt:+$prompt
+
+}$piped"; fi
+  body=$(jq -n --arg m "${ASK_MODEL:-claude-sonnet-5-5}" --arg p "$prompt" \
+    '{model:$m, max_tokens:4096, messages:[{role:"user", content:$p}]}')
+  resp=$(curl -sS https://api.anthropic.com/v1/messages \
+    -H "x-api-key: $k" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+    -d "$body") || return 1
+  if jq -e '.error' >/dev/null <<<"$resp"; then
+    echo "✗ $(jq -r '.error.type + ": " + .error.message' <<<"$resp")" >&2; return 1
+  fi
+  jq -r '[.content[] | select(.type=="text") | .text] | join("")' <<<"$resp"
+}
