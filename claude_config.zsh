@@ -1821,11 +1821,15 @@ ask() {
   local k prompt="$*" piped body resp
   [[ -z "$prompt" && -t 0 ]] && { echo 'usage: ask "question"   |   cat file | ask "what to do with it"' >&2; return 1; }
   k=$(_lcp_anthropic_key) || return 1
-  if [[ ! -t 0 ]]; then piped=$(cat); prompt="${prompt:+$prompt
+  if [[ ! -t 0 ]]; then
+    piped=$(cat)
+    [[ -n "$piped" ]] && prompt="${prompt:+$prompt
 
-}$piped"; fi
-  body=$(jq -n --arg m "${ASK_MODEL:-claude-sonnet-5-5}" --arg p "$prompt" \
-    '{model:$m, max_tokens:4096, messages:[{role:"user", content:$p}]}')
+}$piped"
+  fi
+  # Prompt over stdin: anything on a command line, jq's or curl's, is readable through `ps`.
+  body=$(print -rn -- "$prompt" | jq -Rs --arg m "${ASK_MODEL:-claude-sonnet-5-5}" \
+    '{model:$m, max_tokens:4096, messages:[{role:"user", content:.}]}')
   resp=$(curl -sS https://api.anthropic.com/v1/messages \
     -H @<(print -r -- "x-api-key: $k") -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
     --data-binary @- <<<"$body") || return 1

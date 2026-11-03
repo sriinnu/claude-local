@@ -9,6 +9,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import stat
@@ -971,6 +972,32 @@ print(json.dumps({"content": [{"type": "text", "text": "ok"}], "data": []}), end
         self.check(calls)
         self.assertNotIn("my private question", " ".join(calls[0]["argv"]))
         self.assertIn("my private question", calls[0]["delivered"])
+
+    def test_ask_keeps_the_prompt_off_every_command_line(self):
+        real_jq = shutil.which("jq")
+        log = self.tmp + "/jq.log"
+        with open(self.tmp + "/bin/jq", "w") as f:
+            f.write(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {log}\nexec {real_jq} "$@"\n')
+        os.chmod(self.tmp + "/bin/jq", 0o755)
+        secret = 'my "private" question\nsecond line'
+        r, calls = self.run_in_config(f"ask {shlex.quote(secret)}")
+        self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+        with open(log) as f:
+            self.assertNotIn("private", f.read())
+        self.assertNotIn("private", " ".join(calls[0]["argv"]))
+        body = json.loads(calls[0]["delivered"].split("\n", 1)[1])  # the header comes first
+        self.assertEqual(body["messages"][0]["content"], secret)  # delivered exactly, quotes and newline intact
+
+    def test_ask_with_piped_input_too(self):
+        log = self.tmp + "/curl.log"
+        env = dict(os.environ, PATH=self.tmp + "/bin:" + os.environ["PATH"], HOME=self.tmp, TMPDIR=self.tmp, FAKE_CURL_LOG=log)
+        config = os.path.join(ROOT, "claude_config.zsh")
+        r = subprocess.run(["zsh", "-f", "-c", f"source {config} >/dev/null 2>&1; ask summarize"], input="piped text\n",
+                           capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+        with open(log) as f:
+            body = json.loads(json.loads(f.readline())["delivered"].split("\n", 1)[1])
+        self.assertEqual(body["messages"][0]["content"], "summarize\n\npiped text")
 
     def test_openrouter_probe(self):
         _, calls = self.run_in_config(f"OPENROUTER_API_KEY={self.KEY} OPENROUTER_BASE_URL=http://x; _orf_ratelimited some/model")
