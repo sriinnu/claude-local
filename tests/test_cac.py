@@ -31,6 +31,9 @@ FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, select, sys, time
 log = open(os.environ["CAC_TEST_LOG"], "a", buffering=1)
 log.write(json.dumps({"argv": sys.argv[1:]}) + "\n")
+if os.environ.get("CAC_TEST_REJECT") and "--thinking-display" in sys.argv:
+    print("error: unknown option '--thinking-display'", file=sys.stderr, flush=True)
+    sys.exit(1)
 def out(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 print("claude.ai connectors are disabled because of the key", file=sys.stderr, flush=True)
@@ -112,6 +115,31 @@ while True:
         log.write(json.dumps({"answer": read()}) + "\n")
         stop()
         result()
+    elif text.startswith("think"):
+        out({"type": "stream_event", "event": {"type": "content_block_start", "content_block": {"type": "thinking"}}})
+        for chunk in ("**Weighing it**\nThe first idea looks ", "right to me. ", "SECONDSENTENCE is later."):
+            out({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": chunk}}})
+            time.sleep(0.25)
+        stop()
+        delta("answer")
+        stop()
+        result()
+    elif text.startswith("toolflow"):
+        out({"type": "stream_event", "event": {"type": "content_block_start", "content_block": {"type": "tool_use", "id": "tf", "name": "Bash"}}})
+        stop()
+        out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tf", "name": "Bash", "input": {"command": "sleep 9", "description": "Print two lines with pauses"}}]}})
+        time.sleep(1.3)
+        out({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tf", "content": "OUTLINE1\nOUTLINE2"}]}})
+        time.sleep(0.5)
+        delta("done")
+        stop()
+        result()
+    elif text.startswith("closeerr"):
+        sys.stderr.close()
+        os.close(2)
+        delta("stderr closed")
+        stop()
+        result()
     elif text.startswith("permlong"):
         rid += 1
         cmd = "echo " + "a" * 150 + " && TAILMARK"
@@ -152,14 +180,14 @@ while True:
 class Driver:
     """Runs the real cac.py in a pty against the fake claude."""
 
-    def __init__(self, tmp, args=(), cols=100):
+    def __init__(self, tmp, args=(), cols=100, extra=None):
         self.tmp = tmp
         self.buf = b""
         self.master, slave = pty.openpty()
         import fcntl, struct
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, cols, 0, 0))
         env = dict(os.environ, PATH=tmp + "/bin:" + os.environ["PATH"], HOME=tmp,
-                   CAC_TEST_LOG=tmp + "/log", COLUMNS=str(cols), LINES="40")
+                   CAC_TEST_LOG=tmp + "/log", COLUMNS=str(cols), LINES="40", **(extra or {}))
         env.pop("NO_COLOR", None)
         self.before = termios.tcgetattr(slave)
         self.slave = slave
@@ -650,6 +678,117 @@ class TestLive(Base):
         d.send("after\r")
         d.wait_for("reply to: after")
 
+    def test_malformed_events_are_ignored_quietly(self):
+        d = self.start()
+        d.send("badjson\r")
+        d.wait_for("survived")
+        self.assertNotIn("Error on a", d.text())
+
+    def test_closed_stderr_does_not_spin(self):
+        def cpu(pid):
+            out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+            minutes, seconds = out.split(":")
+            return int(minutes) * 60 + float(seconds)
+        d = self.start()
+        d.send("closeerr\r")
+        d.wait_for("session $")
+        before = cpu(d.p.pid)
+        d.settle(1.5)
+        self.assertLess(cpu(d.p.pid) - before, 0.5)
+        d.send("after\r")
+        d.wait_for("reply to: after")
+
+    def test_oversized_entry_stays_out_of_history(self):
+        d = self.start()
+        d.send("small one\r")
+        d.wait_for("reply to: small one")
+        big = "z" * (cac.HISTORY_ENTRY_MAX + 10)
+        d.send(b"\x1b[200~" + big.encode() + b"\x1b[201~")
+        d.settle(0.3)
+        d.send("\r")
+        d.wait_count("session $", 2)
+        d.settle(0.2)
+        mark = len(d.text())
+        d.send(b"\x1b[A")
+        d.settle(0.3)
+        self.assertIn("small one", d.text()[mark:])
+        self.assertNotIn("zzz", d.text()[mark:])
+        with open(self.tmp + "/.local/state/cac/history.jsonl") as f:
+            self.assertNotIn("zzz", f.read())
+
+    def test_concise_shows_thinking_gist_only(self):
+        d = self.start()
+        d.send("think\r")
+        d.wait_for("session $")
+        self.assertIn("✻ The first idea looks right to me.", d.text())
+        self.assertNotIn("✻ Weighing", d.text())  # the heading isn't the gist
+        final = d.text().split("✻", 1)[1]
+        self.assertNotIn("SECONDSENTENCE", final)  # not in the scrollback in concise view
+
+    def test_live_line_shows_latest_thinking(self):
+        d = self.start()
+        d.send("think\r")
+        d.wait_for("thinking: The first idea")
+
+    def test_detailed_shows_everything_and_ctrl_o_toggles(self):
+        d = self.start()
+        d.send(b"\x0f")
+        d.wait_for("view → detailed")
+        d.send("think\r")
+        d.wait_for("session $")
+        self.assertIn("SECONDSENTENCE", d.text().split("✻", 1)[1])
+        d.send("toolflow\r")
+        d.wait_for("OUTLINE1")
+        d.wait_for("OUTLINE2")
+        d.wait_count("session $", 2)
+        d.send("/view concise\r")
+        d.wait_for("view → concise")
+
+    def test_tool_output_hidden_when_concise(self):
+        d = self.start()
+        d.send("toolflow\r")
+        d.wait_for("session $")
+        self.assertNotIn("OUTLINE1", d.text())
+
+    def test_live_line_says_what_the_tool_is_doing_then_moves_on(self):
+        d = self.start()
+        d.send("toolflow\r")
+        d.wait_for("Bash: Print two lines with pauses 1s")  # its own clock, not the turn's
+        d.wait_for("thinking 0s")  # finished, so no longer "Bash"
+        d.wait_for("1 tool")
+
+    def test_live_line_never_wraps(self):
+        self.d = Driver(self.tmp, (), cols=30)
+        self.d.wait_for("› ")
+        self.d.send("toolflow\r")
+        self.d.wait_for("session $")
+        frames = re.findall(r"\r\x1b\[2m([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] [^\x1b]*)\x1b", self.d.text())
+        self.assertTrue(frames)
+        for frame in frames:
+            self.assertLess(cac.text_width(frame), 30, frame)
+
+    def test_asks_for_thinking_text_unless_told_otherwise(self):
+        d = self.start()
+        argv = d.log()[0]["argv"]
+        self.assertEqual(argv[argv.index("--thinking-display") + 1], "summarized")
+        d.send("/exit\r")
+        d.finish()
+        d = self.start("--thinking-display", "omitted")
+        d.settle(0.3)
+        self.assertEqual(d.log()[-1]["argv"].count("--thinking-display"), 1)
+
+    def test_claude_without_the_flag_still_works(self):
+        self.d = Driver(self.tmp, (), extra={"CAC_TEST_REJECT": "1"})
+        self.d.wait_for("› ")
+        self.d.send("hi\r")
+        self.d.wait_for("reply to: hi")
+        self.assertNotIn("unknown option", self.d.text())
+        runs = [m["argv"] for m in self.d.log() if "argv" in m]
+        self.assertEqual(len(runs), 2)  # rejected once, then restarted without the flag
+        self.assertIn("--thinking-display", runs[0])
+        self.assertNotIn("--thinking-display", runs[1])
+        self.assertEqual(self.d.users(), ["hi"])  # the message wasn't lost or doubled
+
     def test_resume_without_id_is_a_clean_error(self):
         env = dict(os.environ, PATH=self.tmp + "/bin:" + os.environ["PATH"], HOME=self.tmp, CAC_TEST_LOG=self.tmp + "/log")
         for args in (["--resume"], ["--resume", "--model", "haiku"]):
@@ -781,6 +920,65 @@ class TestPiped(Base):
         r = self.run_cac("fail\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("credit balance", r.stderr.decode())
+
+
+class TestSecretsStayOutOfArgv(unittest.TestCase):
+    """Anything on a command line is readable by every local process through `ps`."""
+
+    KEY = "sk-planted-secret-value"
+    FAKE_CURL = """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+delivered = ""
+for i, a in enumerate(args):
+    if a == "-H" and args[i + 1].startswith("@"):
+        delivered += open(args[i + 1][1:]).read()
+    if a in ("--data-binary", "-d") and args[i + 1] == "@-":
+        delivered += sys.stdin.read()
+with open(os.environ["FAKE_CURL_LOG"], "a") as f:
+    f.write(json.dumps({"argv": args, "delivered": delivered}) + "\\n")
+print(json.dumps({"content": [{"type": "text", "text": "ok"}], "data": []}), end="")
+"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cac-argv-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        os.makedirs(self.tmp + "/bin")
+        for name, body in (("curl", self.FAKE_CURL.replace("#!/usr/bin/env python3", "#!" + sys.executable, 1)),
+                           ("security", f"#!/bin/sh\nprintf %s {self.KEY}\n")):
+            with open(f"{self.tmp}/bin/{name}", "w") as f:
+                f.write(body)
+            os.chmod(f"{self.tmp}/bin/{name}", 0o755)
+
+    def run_in_config(self, script):
+        log = self.tmp + "/curl.log"
+        env = dict(os.environ, PATH=self.tmp + "/bin:" + os.environ["PATH"], HOME=self.tmp, TMPDIR=self.tmp, FAKE_CURL_LOG=log)
+        config = os.path.join(ROOT, "claude_config.zsh")
+        r = subprocess.run(["zsh", "-f", "-c", f"source {config} >/dev/null 2>&1; {script}"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, env=env, timeout=30)
+        with open(log) as f:
+            return r, [json.loads(line) for line in f]
+
+    def check(self, calls):
+        self.assertTrue(calls, "curl was never called")
+        for call in calls:
+            self.assertNotIn(self.KEY, " ".join(call["argv"]))
+            self.assertIn(self.KEY, call["delivered"])  # still sent, just not on the command line
+
+    def test_ask_keeps_key_and_prompt_off_the_command_line(self):
+        r, calls = self.run_in_config("ask 'my private question'")
+        self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+        self.check(calls)
+        self.assertNotIn("my private question", " ".join(calls[0]["argv"]))
+        self.assertIn("my private question", calls[0]["delivered"])
+
+    def test_openrouter_probe(self):
+        _, calls = self.run_in_config(f"OPENROUTER_API_KEY={self.KEY} OPENROUTER_BASE_URL=http://x; _orf_ratelimited some/model")
+        self.check(calls)
+
+    def test_openrouter_catalog(self):
+        _, calls = self.run_in_config(f"OPENROUTER_API_KEY={self.KEY} OPENROUTER_BASE_URL=http://x; _orf_models_json")
+        self.check(calls)
 
 
 if __name__ == "__main__":
