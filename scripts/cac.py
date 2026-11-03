@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import termios
+import textwrap
 import time
 import unicodedata
 import uuid
@@ -36,6 +37,7 @@ HELP = (
     "enter send · ctrl-j or alt-enter newline · \\ then enter newline\n"
     "ctrl-c stop the reply, or clear the line · ctrl-d quit · up/down history\n"
     "shift+tab cycle mode · /mode <" + "|".join(MODES) + ">\n"
+    "ctrl-o or /view: concise (one-line thinking gist) or detailed (full summary, tool output)\n"
     "/exit quit · other /commands go to claude"
 )
 NOISE = "claude.ai connectors are disabled"  # printed on every API-key start, says nothing useful
@@ -46,6 +48,7 @@ WAKE_RELEASE_SECONDS = 3.0  # output outside a turn has no result to end it; giv
 HISTORY_MAX = 500
 HISTORY_ENTRY_MAX = 8192
 COLLAPSE_ROWS = 12
+DETAIL_RESULT_LINES = 12
 
 
 class Style:
@@ -124,6 +127,21 @@ def wrap_cells(s: str, cells: int) -> list:
         used += w
     rows.append("".join(row))
     return rows
+
+
+def sentences(text: str) -> list:
+    """Split thinking into sentences, without markdown decoration."""
+    clean = re.sub(r"[*#`]+", "", text)
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+|\n+", clean) if x.strip()]
+
+
+def gist_of(text: str) -> str:
+    """The first real sentence. A short first line is usually just a heading."""
+    parts = sentences(text)
+    for part in parts:
+        if len(part.split()) >= 4:
+            return part
+    return parts[0] if parts else ""
 
 
 def human(n: int) -> str:
@@ -729,6 +747,7 @@ class App:
         self.child = None
         self.out_buf = b""
         self.err_buf = b""
+        self.err_open = True
         self.busy = False
         self.quitting = False
         self.child_gone = False
@@ -739,6 +758,16 @@ class App:
         self.spinner_on = False
         self.spin_at = 0.0
         self.label = "thinking"
+        self.activity_key = None
+        self.activity_start = 0.0
+        self.running = {}  # tool_use_id -> label, for tools still in flight
+        self.block_kind = None
+        self.thought = ""
+        self.turn_tools = 0
+        self.detailed = os.environ.get("CAC_VIEW") == "detailed"
+        self.thinking_flag = True  # dropped if this claude doesn't know --thinking-display
+        self.restart_child = False
+        self.first_message = None
         self.turn_start = 0.0
         self.turn_text = False
         self.seen_tools = set()
@@ -782,6 +811,20 @@ class App:
             self.editor.draw()
         self.flush()
 
+    def activity(self, key, label: str):
+        """Say what's happening now. The clock restarts only when the activity really changes."""
+        if key != self.activity_key:
+            self.activity_key = key
+            self.activity_start = time.monotonic()
+        self.label = label
+
+    def _idle_activity(self):
+        if self.running:
+            key = next(reversed(self.running))
+            self.activity(key, self.running[key])
+        else:
+            self.activity("thinking", "thinking")
+
     def _clear_spinner(self):
         if self.spinner_on:
             self.w("\r\x1b[K")
@@ -795,8 +838,13 @@ class App:
         self.spin_at = now
         frame = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(now * 10) % 10]
         held = " · input held" if self.queue else ""
-        secs = int(now - self.turn_start)
-        self.w(f"\r{self.s.dim}{frame} {self.label} {secs}s · ctrl-c stops{held}{self.s.off}\x1b[K")
+        rest = f" {int(now - self.activity_start)}s · ctrl-c stops{held}"
+        width = shutil.get_terminal_size((80, 24)).columns
+        room = width - 3 - text_width(rest)
+        if room < 12:  # narrow: what's happening matters more than the hint
+            rest = f" {int(now - self.activity_start)}s"
+            room = max(4, width - 3 - text_width(rest))
+        self.w(f"\r{self.s.dim}{frame} {fit(self.label, room)}{rest}{self.s.off}\x1b[K")
         self.spinner_on = True
         self.flush()
 
@@ -813,9 +861,9 @@ class App:
         h = self.editor.history
         if h and h[-1] == text:
             return
-        h.append(text)
         if len(text) > HISTORY_ENTRY_MAX:
             return
+        h.append(text)
         try:
             os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
             fd = os.open(self.history_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -851,6 +899,8 @@ class App:
             cmd += ["--permission-mode", DEFAULT_MODE]
         if not self._has("--append-system-prompt"):
             cmd += ["--append-system-prompt", SYSTEM_NOTE]
+        if self.thinking_flag and not self._has("--thinking-display"):
+            cmd += ["--thinking-display", "summarized"]  # default streams empty thinking text
         self.child = subprocess.Popen(
             cmd + self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=True,  # no controlling tty: the keyboard belongs to cac
@@ -869,6 +919,8 @@ class App:
 
     def send_user(self, text: str):
         self.send({"type": "user", "message": {"role": "user", "content": text}})
+        if self.turns == 0:
+            self.first_message = text
         self.turns += 1
         self.begin_turn()
 
@@ -878,7 +930,10 @@ class App:
         self.woken = False
         self.turn_start = time.monotonic()
         self.turn_text = False
-        self.label = "thinking"
+        self.turn_tools = 0
+        self.running = {}
+        self.activity_key = None
+        self.activity("thinking", "thinking")
         self.last_was_tool = False
         if self.interactive:
             self.w("\x1b[?25l")
@@ -897,7 +952,7 @@ class App:
             return
         self.interrupting = True
         self.interrupt_at = now
-        self.label = "stopping"
+        self.activity("stopping", "stopping")
         self.control("int", {"subtype": "interrupt"})
 
     def stop_child(self, force: bool = False):
@@ -958,7 +1013,9 @@ class App:
             self.mode = e["permissionMode"]
             self._sync_prompt()
         if e.get("subtype") == "api_retry":
-            self.label = "retrying"
+            self.activity("retrying", "retrying")
+        elif e.get("subtype") == "thinking_tokens" and self.block_kind == "thinking" and not self.thought:
+            self.activity("thinking", f"thinking · ~{human(e.get('estimated_tokens') or 0)} tokens")
 
     def _sync_prompt(self):
         self.editor.prompt = "› " if self.mode == DEFAULT_MODE else f"{self.mode} › "
@@ -971,11 +1028,18 @@ class App:
         ev = e.get("event") or {}
         t = ev.get("type")
         if t == "content_block_start":
-            block = (ev.get("content_block") or {}).get("type")
-            if block == "thinking" or block == "redacted_thinking":
-                self.label = "thinking"
-            elif block == "tool_use":
-                self.label = sanitize((ev["content_block"].get("name") or "tool"))
+            block = ev.get("content_block") or {}
+            self.block_kind = block.get("type")
+            if self.block_kind in ("thinking", "redacted_thinking"):
+                self.thought = ""
+                self.activity("thinking", "thinking")
+            elif self.block_kind == "tool_use":
+                self.activity(block.get("id"), sanitize(block.get("name") or "tool"))
+        elif t == "content_block_delta" and (ev.get("delta") or {}).get("type") == "thinking_delta":
+            self.thought += sanitize(ev["delta"].get("thinking") or "")
+            latest = sentences(self.thought)
+            if latest:
+                self.activity("thinking", "thinking: " + latest[-1])
         elif t == "content_block_delta" and (ev.get("delta") or {}).get("type") == "text_delta":
             self._wake()
             self._clear_spinner()
@@ -983,8 +1047,36 @@ class App:
             self.last_was_tool = False
             self.render.text(sanitize(ev["delta"].get("text") or ""))
             self.last_delta = time.monotonic()
-        elif t == "content_block_stop" and self.render.open:
+        elif t == "content_block_stop":
+            if self.block_kind == "thinking":
+                self._show_thought()
+            self.block_kind = None
             self.render.end()
+
+    def _show_thought(self):
+        thought, self.thought = self.thought.strip(), ""
+        if not thought or not self.interactive:
+            return
+        self._clear_spinner()
+        self.render.end()
+        width = max(20, shutil.get_terminal_size((80, 24)).columns - 5)
+        gap = "" if self.last_was_tool else "\n"
+        if self.detailed:
+            rows = []
+            for line in re.sub(r"[*#`]+", "", thought).split("\n"):
+                rows += textwrap.wrap(line, width) or [""]
+        else:
+            rows = [fit(gist_of(thought), width)]
+        for i, row in enumerate(rows):
+            lead = "  ✻ " if i == 0 else "    "
+            self.w(f"{gap if i == 0 else ''}{self.s.dim}{lead}{row}{self.s.off}\n")
+        self.last_was_tool = True
+        self.activity("thinking", "thinking")
+
+    def _tool_label(self, name: str, block: dict) -> str:
+        i = block.get("input") if isinstance(block.get("input"), dict) else {}
+        what = i.get("description") or self._summary(block)
+        return f"{name}: {what}" if what else name
 
     def _summary(self, tool: dict) -> str:
         i = tool.get("input") or {}
@@ -994,7 +1086,10 @@ class App:
         return ""
 
     def on_assistant(self, e: dict):
-        for block in (e.get("message") or {}).get("content") or []:
+        content = (e.get("message") or {}).get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
             if block.get("type") != "tool_use" or block.get("id") in self.seen_tools:
                 continue
             self.seen_tools.add(block.get("id"))
@@ -1018,7 +1113,10 @@ class App:
             else:
                 print(f"{pad}⏺ {line}", file=sys.stderr, flush=True)
             if not sub:
-                self.label = name
+                self.turn_tools += 1
+                label = sanitize(self._tool_label(name, block))
+                self.running[block.get("id")] = label
+                self.activity(block.get("id"), label)
 
     def on_tool_result(self, e: dict):
         if e.get("parent_tool_use_id"):
@@ -1027,14 +1125,23 @@ class App:
         if not isinstance(content, list):
             return
         for block in content:
-            if block.get("type") != "tool_result" or not block.get("is_error"):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
+            self.running.pop(block.get("tool_use_id"), None)
             body = block.get("content")
             if isinstance(body, list):
                 body = " ".join(str(p.get("text", "")) for p in body if isinstance(p, dict))
             width = shutil.get_terminal_size((80, 24)).columns
-            text = fit(str(body or "failed"), width - 8)
-            self.info(f"    {self.s.err}✗ {text}{self.s.off}")
+            if block.get("is_error"):
+                text = fit(str(body or "failed"), width - 8)
+                self.info(f"    {self.s.err}✗ {text}{self.s.off}")
+            elif self.detailed and self.interactive and body:
+                lines = sanitize(str(body)).split("\n")
+                shown = lines[:DETAIL_RESULT_LINES]
+                if len(lines) > len(shown):
+                    shown.append(f"… +{len(lines) - len(shown)} more lines")
+                self.info("\n".join(f"    {self.s.dim}{fit(x, width - 6)}{self.s.off}" for x in shown))
+        self._idle_activity()
 
     def on_result(self, e: dict):
         total = e.get("total_cost_usd")
@@ -1079,6 +1186,8 @@ class App:
                         ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
         if tokens_in or usage.get("output_tokens"):
             parts.append(f"{human(tokens_in)} in · {human(usage.get('output_tokens') or 0)} out")
+        if self.turn_tools:
+            parts.append(f"{self.turn_tools} tool{'' if self.turn_tools == 1 else 's'}")
         parts.append(f"{time.monotonic() - self.turn_start:.1f}s")
         parts.append(self.mode or "")
         width = shutil.get_terminal_size((80, 24)).columns
@@ -1245,7 +1354,7 @@ class App:
         if self.perms:
             self.show_perm()
         else:
-            self.label = "working"
+            self._idle_activity()
             self.settle_idle()
         self.flush()
 
@@ -1268,7 +1377,9 @@ class App:
 
     def on_key(self, ev: tuple):
         kind, value = ev
-        if self.perms:
+        if ev == ("key", "ctrl-o"):
+            self.set_view(not self.detailed)
+        elif self.perms:
             self.on_perm_key(ev)
         elif self.busy:
             if ev == ("key", "ctrl-c"):
@@ -1308,6 +1419,10 @@ class App:
         else:
             ed.draw()
 
+    def set_view(self, detailed: bool):
+        self.detailed = detailed
+        self.info(f"  {self.s.dim}view → {'detailed' if detailed else 'concise'}{self.s.off}")
+
     def cycle_mode(self):
         at = CYCLE.index(self.mode) if self.mode in CYCLE else -1
         self.set_mode(CYCLE[(at + 1) % len(CYCLE)])
@@ -1336,6 +1451,11 @@ class App:
         elif parts[0] == "/help":
             for line in HELP.split("\n"):
                 self.info(f"  {self.s.dim}{line}{self.s.off}")
+        elif parts[0] == "/view":
+            if len(parts) == 2 and parts[1] in ("concise", "detailed"):
+                self.set_view(parts[1] == "detailed")
+            else:
+                self.set_view(not self.detailed)
         elif parts[0] == "/mode":
             if len(parts) == 2:
                 self.set_mode(parts[1])
@@ -1373,11 +1493,16 @@ class App:
                 continue
             chunk = os.read(fd, 65536)
             if name == "err":
+                if not chunk:  # a closed pipe stays readable forever: stop watching it or we spin
+                    self.err_open = False
+                    continue
                 self.err_buf += chunk
                 *lines, self.err_buf = self.err_buf.split(b"\n")
                 for line in lines:
                     text = sanitize(line.decode("utf-8", "replace")).strip()
-                    if text and NOISE not in text:
+                    if self.thinking_flag and "thinking-display" in text:
+                        self.restart_child = True  # an older or newer claude: run without the flag
+                    elif text and NOISE not in text:
                         self.info(f"{self.s.dim}{text}{self.s.off}")
                 continue
             if not chunk:
@@ -1389,15 +1514,29 @@ class App:
                 if line.strip():
                     self.on_line(line)
 
+    def maybe_restart_child(self):
+        """Thinking text is a nicety. If claude rejects the flag, keep working without it."""
+        if not (self.restart_child and self.child_gone):
+            return
+        self.restart_child = False
+        self.thinking_flag = False
+        self.child_gone = False
+        self.err_open = True
+        self.out_buf = self.err_buf = b""
+        self.child.wait()
+        self.start_child()
+        if self.first_message is not None:
+            self.send({"type": "user", "message": {"role": "user", "content": self.first_message}})
+
     def child_fds(self) -> list:
-        return [self.child.stdout.fileno(), self.child.stderr.fileno()]
+        return [self.child.stdout.fileno()] + ([self.child.stderr.fileno()] if self.err_open else [])
 
     def run_interactive(self):
         self.load_history()
         self.setup_tty()
         s = self.s
         self.w(f"{s.dim}session {self.sid or '(from claude)'} · {self.mode} · shift+tab or /mode · "
-               f"/help · /exit{s.off}\n\n")
+               f"ctrl-o details · /help · /exit{s.off}\n\n")
         self.editor.prompt = "› " if self.mode == DEFAULT_MODE else f"{self.mode} › "
         self.editor.draw()
         while not self.quitting and not self.child_gone:
@@ -1414,6 +1553,8 @@ class App:
                 for ev in self.parser.flush():
                     self.tty_key(ev)
             self.pump_child(ready)
+            self._drain_on_exit()
+            self.maybe_restart_child()
             now = time.monotonic()
             if self.render.open and now - self.last_delta > 0.2:
                 self.render.settle()
@@ -1428,6 +1569,14 @@ class App:
         self._clear_spinner()
         self.render.end()
         self.flush()
+
+    def _drain_on_exit(self):
+        """A dying child may close stdout first; its error line must still be read."""
+        if not self.child_gone or not self.err_open:
+            return
+        fd = self.child.stderr.fileno()
+        while self.err_open and select.select([fd], [], [], 0.5)[0]:
+            self.pump_child([fd])
 
     def _check_resize(self, now: float):
         ed = self.editor
@@ -1471,6 +1620,8 @@ class App:
                     *got, pending = (pending + data).split(b"\n")
                     self.lines += [g.decode("utf-8", "replace") for g in got if g.strip()]
             self.pump_child(ready)
+            self._drain_on_exit()
+            self.maybe_restart_child()
             self.flush()
 
     def main(self) -> int:

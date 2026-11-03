@@ -921,7 +921,7 @@ _orf_ratelimited() {
   local model="$1" code
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
     "$OPENROUTER_BASE_URL/v1/chat/completions" \
-    -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+    -H @<(print -r -- "Authorization: Bearer $OPENROUTER_API_KEY") \
     -H "Content-Type: application/json" \
     -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}")
   [[ "$code" == "429" ]]
@@ -942,7 +942,7 @@ _orf_models_json() {
     fi
   fi
   local resp
-  resp=$(curl -sf -m 8 "$OPENROUTER_BASE_URL/v1/models" -H "Authorization: Bearer $OPENROUTER_API_KEY") || return 1
+  resp=$(curl -sf -m 8 "$OPENROUTER_BASE_URL/v1/models" -H @<(print -r -- "Authorization: Bearer $OPENROUTER_API_KEY")) || return 1
   print -r -- "$resp" > "$cache"
   print -r -- "$resp"
 }
@@ -1827,8 +1827,8 @@ ask() {
   body=$(jq -n --arg m "${ASK_MODEL:-claude-sonnet-5-5}" --arg p "$prompt" \
     '{model:$m, max_tokens:4096, messages:[{role:"user", content:$p}]}')
   resp=$(curl -sS https://api.anthropic.com/v1/messages \
-    -H "x-api-key: $k" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
-    -d "$body") || return 1
+    -H @<(print -r -- "x-api-key: $k") -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+    --data-binary @- <<<"$body") || return 1
   if jq -e '.error' >/dev/null <<<"$resp"; then
     echo "✗ $(jq -r '.error.type + ": " + .error.message' <<<"$resp")" >&2; return 1
   fi
