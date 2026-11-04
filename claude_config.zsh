@@ -221,6 +221,21 @@ _launch_claude() {
   # Pre-launch health check (non-blocking — just warn)
   _lcp_health_check "$base_url" "$opus_model" "$provider" || true
 
+  # Live model news for this lane, before Claude Code takes the screen: what's new, what passed the
+  # streaming + tool tests, what went away. Adds verified ids to /model; a default only moves on
+  # `lanes accept`. Fails open: any problem here and the launch uses the ids above, unchanged.
+  # Terminal only, so scripts stay quiet. LCP_LANE_SYNC=off skips it, =force runs it without a tty.
+  local picker_json="${_LCP_PICKER_JSON:-}"
+  if [[ "${LCP_LANE_SYNC:-}" == force || ( -t 2 && "${LCP_LANE_SYNC:-}" != off ) ]]; then
+    local -a _ls_out
+    _ls_out=("${(@f)$(LANE_PICKER="$picker_json" python3 -I "${_LCP_DIR}/scripts/lane-sync.py" banner \
+      "$provider" "$opus_model" "$sonnet_model" "$haiku_model")}")
+    if (( ${#_ls_out} >= 3 )); then
+      opus_model="${_ls_out[1]}" sonnet_model="${_ls_out[2]}" haiku_model="${_ls_out[3]}"
+      [[ -n "${_ls_out[4]:-}" ]] && picker_json="${_ls_out[4]}"
+    fi
+  fi
+
   echo "→ $provider ($opus_model) @ ${base_url#https://}"
   echo ""
 
@@ -247,7 +262,7 @@ _launch_claude() {
     export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
     # Optional per-launch /model picker rows (inline --settings JSON); empty for most providers.
     local -a picker_args=()
-    [[ -n "${_LCP_PICKER_JSON:-}" ]] && picker_args=(--settings "$_LCP_PICKER_JSON")
+    [[ -n "$picker_json" ]] && picker_args=(--settings "$picker_json")
     claude "${picker_args[@]}" "$@"
   )
   local exit_code=$?
@@ -718,43 +733,14 @@ siliconflow() {
 
 # Live model list from SiliconFlow. Chat models only (image/video/audio/embedding/rerank filtered
 # out). `sf-models [pattern]` greps; `sf-models --use <slug> [claude args]` launches.
-# /v1/models carries no pricing — check cloud.siliconflow.com/models for the number before a long run.
+# Verdicts are measured by scripts/lane-sync.py, not typed here; prices come from kosha when it knows them.
 sf-models() {
-  if [[ -z "${SILICONFLOW_API_KEY:-}" ]]; then
-    echo "✗ SILICONFLOW_API_KEY not found" >&2; return 1
-  fi
   if [[ "${1:-}" == "--use" ]]; then
     shift
     [[ -z "${1:-}" ]] && { echo "usage: sf-models --use <slug> [claude args]" >&2; return 1; }
     siliconflow "$@"; return
   fi
-  _sf_fix_base_url
-  local pattern="${1:-}" body
-  body=$(curl -sf -m 15 "$SILICONFLOW_BASE_URL/v1/models" \
-    -H @<(print -r -- "Authorization: Bearer $SILICONFLOW_API_KEY")) \
-    || { echo "✗ could not reach $SILICONFLOW_BASE_URL/v1/models (key? network?)" >&2; return 1; }
-  print -r -- "$body" | python3 -I -c '
-import json,sys,re
-skip=re.compile(r"(FLUX|Wan-AI|Qwen-Image|Z-Image|fish-speech|CosyVoice|IndexTTS|Embedding|Reranker)",re.I)
-# Verified broken for Claude Code over /v1/messages stream=true (2026-10-21) — see lane header.
-broken={
- "deepseek-ai/DeepSeek-V4.1-Flash":"blank tool id/name after the first tool turn (use GLM-5.3-Flash or V4-Flash)",
- "deepseek-ai/DeepSeek-V4.1-Flash-1017":"empty text, shredded tool calls",
- "zai-org/GLM-5.3":"400 stop-must-be-array on tool-history requests",
- "moonshotai/Kimi-K2.7-Code":"streams no text","stepfun-ai/Step-3.5-Flash":"streams no text",
- "MiniMaxAI/MiniMax-M3":"<think> leaks into text","Qwen/Qwen3.8-27B":"tool JSON fragmented",
- "Qwen/Qwen3.6-35B-A3B":"tool JSON fragmented, blank ids",
- "deepseek-ai/DeepSeek-V3.2":"never calls tools","ByteDance-Seed/Seed-OSS-36B-Instruct":"never calls tools",
- "openai/gpt-oss-20b":"no function calling","openai/gpt-oss-120b":"no function calling"}
-ids=sorted((m["id"] for m in json.load(sys.stdin)["data"] if not skip.search(m["id"])),key=str.lower)
-pat=sys.argv[1].lower()
-shown=0
-for i in ids:
-    if pat and pat not in i.lower(): continue
-    shown+=1
-    print(f"  ✗ {i}  — {broken[i]}" if i in broken else f"    {i}")
-print(f"\n{shown}/{len(ids)} chat models  (✗ = broken for Claude Code; untested slugs may still misbehave — try `siliconflow <slug> -p pong` first)")
-' "$pattern"
+  lanes show siliconflow "${1:-}"
 }
 
 # OpenRouter cheap-but-good launchers (paid, but pennies — won't queue like free tier).
@@ -1646,6 +1632,14 @@ hf() {
 # Usage: llp-stats
 # Probe every lane and write the status cache LLM Bar reads. Script lives in scripts/ (no secrets).
 lane-status() { zsh "${_LCP_DIR}/scripts/lane-status.zsh" --print "$@"; }
+# Model verdicts per lane: lanes [show [lane] [grep]] | test <lane> | accept <lane> <id> [--replace old]
+# | revert <lane> [old] | sweep. State: ~/.local/state/lcp/lanes/, background log: ~/.cache/lcp/lane-sync.log
+lanes() {
+  case "${1:-show}" in
+    show|test|accept|revert|sweep|selftest) python3 -I "${_LCP_DIR}/scripts/lane-sync.py" "${@:-show}" ;;
+    *) python3 -I "${_LCP_DIR}/scripts/lane-sync.py" show "$@" ;;
+  esac
+}
 
 llp-stats() {
   [ -f "$_LCP_SESSION_LOG" ] || { echo "No session data yet — run a session first."; return 1; }
@@ -1762,6 +1756,8 @@ lcp-help() {
                     (--status / --list / --pull / --help for sub-options)
 
   OBSERVABILITY
+    lanes          Live models per lane with verdicts: lanes siliconflow [grep], lanes test <lane>,
+                    lanes accept <lane> <id> (moves a default), lanes revert <lane>. Launches show the news.
     lane-status    Probe every lane (8 tokens each) -> ~/.cache/lcp/lane-status.json; feeds LLM Bar's menu
                     (zsh scripts/lane-status.zsh --print; launchd runs it daily at 07:30)
     llp-stats      Session dashboard — error rates, avg duration, per-provider

@@ -120,3 +120,6 @@ if changed and not quiet:
     subprocess.run(["osascript","-e",f'display notification "{txt}" with title "LLM Bar: lane status changed"'],check=False)
 PY
 rm -rf "$TMP"
+# Daily job only: re-test what's pending or expired on every lane, so the next launch has the news.
+# Interactive `lane-status --print` skips it to stay quick.
+(( PRINT )) || python3 -I "${0:A:h}/lane-sync.py" sweep >> "${OUT:h}/lane-sync.log" 2>&1
