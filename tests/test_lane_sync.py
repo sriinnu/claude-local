@@ -79,10 +79,10 @@ class Base(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         Fake.ids, Fake.plan, Fake.calls, Fake.err = ["org/old"], {}, [], "nope"
         self.lanes = {"fake": {"base": self.url, "key": "X", "list": self.url + "/v1/models", "kosha": "", "control": None}}
-        self.env = {**os.environ, "LANE_SYNC_NO_SPAWN": "1", "LANE_SYNC_STATE_DIR": self.tmp, "LANE_SYNC_TEST_KEY": "k",
+        self.env = {**os.environ, "LANE_SYNC_CLAUDE": "none", "LANE_SYNC_NO_SPAWN": "1", "LANE_SYNC_STATE_DIR": self.tmp, "LANE_SYNC_TEST_KEY": "k",
                     "LANE_SYNC_TEST_LANES": json.dumps(self.lanes), "XDG_CACHE_HOME": self.tmp,
                     "LANE_SYNC_KOSHA": os.path.join(self.tmp, "none.json")}
-        os.environ.update({k: self.env[k] for k in ("LANE_SYNC_STATE_DIR", "LANE_SYNC_TEST_KEY", "LANE_SYNC_TEST_LANES", "LANE_SYNC_KOSHA")})
+        os.environ.update({k: self.env[k] for k in ("LANE_SYNC_CLAUDE", "LANE_SYNC_STATE_DIR", "LANE_SYNC_TEST_KEY", "LANE_SYNC_TEST_LANES", "LANE_SYNC_KOSHA")})
 
     def run_cli(self, *args, env=None):
         return subprocess.run([sys.executable, "-I", SCRIPT, *args], capture_output=True, text=True,
@@ -292,6 +292,90 @@ class Secrets(Base):
         env = {**self.env, "LANE_SYNC_TEST_KEY": "sekret-value"}
         r = self.banner(env=env)
         self.assertNotIn("sekret-value", r.stdout + r.stderr + json.dumps(self.state()))
+
+
+FAKE_CLAUDE = """#!/usr/bin/python3 -I
+import json, os, re, sys
+mode = open(os.environ["LANE_SYNC_FAKE_DIR"] + "/mode").read().strip().split(",")
+count_file = os.environ["LANE_SYNC_FAKE_DIR"] + "/count"
+n = int(open(count_file).read()) if os.path.exists(count_file) else 0
+open(count_file, "w").write(str(n + 1))
+how = mode[min(n, len(mode) - 1)]
+with open(os.environ["LANE_SYNC_FAKE_DIR"] + "/seen.json", "w") as f:
+    json.dump({"argv": sys.argv, "cwd": os.getcwd(), "cwd_files": os.listdir("."), "env": dict(os.environ)}, f)
+token = re.search(r"ZX[0-9a-f]{8}", " ".join(sys.argv)).group(0)
+if how == "good": print("Sure, " + token)
+elif how == "garbled": print("this message came through garbled")
+elif how == "crash": print("boom", file=sys.stderr); sys.exit(1)
+else: print("API Error: " + how); sys.exit(1)
+"""
+
+
+class RealPrompt(Base):
+    def setUp(self):
+        super().setUp()
+        self.fake = os.path.join(self.tmp, "fake")
+        os.makedirs(self.fake)
+        self.bin = os.path.join(self.fake, "claude")
+        with open(self.bin, "w") as f:
+            f.write(FAKE_CLAUDE)
+        os.chmod(self.bin, 0o755)
+        os.environ["LANE_SYNC_CLAUDE"] = self.bin
+        os.environ["LANE_SYNC_FAKE_DIR"] = self.fake
+        self.addCleanup(os.environ.__setitem__, "LANE_SYNC_CLAUDE", "none")
+        self.addCleanup(os.environ.pop, "LANE_SYNC_FAKE_DIR")
+
+    def verdict(self, mode):
+        with open(os.path.join(self.fake, "mode"), "w") as f:
+            f.write(mode)
+        return ls.ladder("fake", "k" * 20, "org/m")
+
+    def test_following_the_prompt_passes(self):
+        v, why = self.verdict("good")
+        self.assertEqual(v, "pass")
+        self.assertIn("real prompt 3/3", why)
+
+    def test_a_model_that_ignores_the_prompt_is_broken_even_with_clean_streams(self):
+        v, why = self.verdict("garbled")
+        self.assertEqual(v, "broken")
+        self.assertIn("ignored the prompt", why)
+
+    def test_one_miss_is_noted_not_fatal(self):
+        v, why = self.verdict("garbled,good,good")
+        self.assertEqual(v, "pass")
+        self.assertIn("real prompt 2/3", why)
+
+    def test_a_400_on_the_real_request_is_broken(self):
+        v, why = self.verdict("400,400")
+        self.assertEqual(v, "broken")
+        self.assertIn("HTTP 400", why)
+
+    def test_trouble_that_says_nothing_about_the_model_is_no_verdict(self):
+        for mode in ("crash", "401", "429", "500"):
+            os.path.exists(self.fake + "/count") and os.remove(self.fake + "/count")
+            self.assertIsNone(self.verdict(mode)[0], mode)
+
+    def test_missing_claude_says_so(self):
+        os.environ["LANE_SYNC_CLAUDE"] = "none"
+        v, why = self.verdict("good")
+        self.assertEqual(v, "pass")
+        self.assertIn("not run", why)
+
+    def test_run_is_isolated_from_your_files_and_other_keys(self):
+        os.environ["OPENROUTER_API_KEY"] = "other-provider-key"
+        self.addCleanup(os.environ.pop, "OPENROUTER_API_KEY")
+        self.verdict("good")
+        with open(os.path.join(self.fake, "seen.json")) as f:
+            seen = json.load(f)
+        real_home = os.path.expanduser("~")
+        self.assertNotEqual(seen["env"]["HOME"], real_home)
+        self.assertTrue(seen["env"]["CLAUDE_CONFIG_DIR"].startswith(seen["env"]["HOME"]))
+        self.assertEqual(seen["cwd_files"], [])
+        self.assertNotIn("OPENROUTER_API_KEY", seen["env"])
+        self.assertEqual(seen["env"]["ANTHROPIC_AUTH_TOKEN"], "k" * 20)
+        self.assertNotIn("k" * 20, " ".join(seen["argv"]))
+        self.assertIn("Bash", seen["argv"][seen["argv"].index("--disallowedTools") + 1])
+        self.assertFalse(os.path.exists(seen["cwd"]), "throwaway folder left behind")
 
 
 class ReviewFindings(Base):
