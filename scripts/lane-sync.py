@@ -3,7 +3,8 @@
 
 Three questions, kept apart: does the id exist (the provider's list, or kosha + OpenRouter as guesses
 where a plan has no list), does this key get it (an 8-token call), does it work in Claude Code (stream,
-tool call, then tool history, because single-turn clean has lied before).
+tool call, tool history, because single-turn clean has lied before, then a real `claude -p` that must
+repeat a random token, because clean streams don't prove the model follows the prompt).
 
     lane-sync.py banner <lane> <opus> <sonnet> <haiku>   launch path: stderr banner, stdout slots + picker
     lane-sync.py show [lane] [grep]                      verdicts, no model calls
@@ -15,7 +16,8 @@ tool call, then tool history, because single-turn clean has lied before).
 
 The launch path fails open: on any error the launcher keeps its hardcoded ids. New ids reach /model by
 themselves; a default slot only moves on `accept`. Keys come from the keychain by name and are never
-printed or put on argv. Probes send only the synthetic prompts below, never repo content.
+printed or put on argv. Probes send only the synthetic prompts below, never repo content: the real
+`claude -p` runs with a throwaway HOME and config in an empty folder, so no CLAUDE.md or memory goes along.
 """
 import argparse
 import contextlib
@@ -24,9 +26,12 @@ import fcntl
 import json
 import os
 import re
+import secrets
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -43,6 +48,7 @@ BLOCKED_COOLDOWN = 21600 # a lane with an empty wallet or dead key: try again in
 SWEEP_SKIP = 21600       # the daily job skips a lane tested in the last 6 hours (login + 07:30)
 FULL_LADDERS = 5         # full ladders per run: bounds spend
 SMOKE_CALLS = 30         # 8-token "is this served" calls per run
+REAL_PROMPT_RUNS = 3     # real `claude -p` runs per model
 MAX_ROWS = 8             # banner rows per section
 MAX_PICKER_ADDS = 12
 
@@ -339,6 +345,75 @@ class Budget:
             return True
 
 
+# Nothing here can touch the machine: read-only tools in an empty folder, everything else off.
+BLOCKED_TOOLS = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Agent,Task"
+API_ERROR = re.compile(r"API Error: (\d{3})")
+_real_claude_slots = threading.Semaphore(2)   # each one is a full process; this Mac has panicked on memory
+
+
+def find_claude():
+    override = os.environ.get("LANE_SYNC_CLAUDE")
+    if override is not None:
+        return None if override == "none" else override
+    extra = [os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin"]   # launchd's PATH is bare
+    return shutil.which("claude", path=os.pathsep.join([os.environ.get("PATH", ""), *extra]))
+
+
+def isolated_env(lane, key, model, home):
+    """Everything claude needs to reach this lane and nothing of yours: no other keys, no ~/.claude."""
+    env = child_env()
+    env |= {"HOME": home, "CLAUDE_CONFIG_DIR": os.path.join(home, "config"),
+            "ANTHROPIC_BASE_URL": lane_table()[lane]["base"], "ANTHROPIC_AUTH_TOKEN": key,
+            "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_OPUS_MODEL": model, "ANTHROPIC_DEFAULT_FABLE_MODEL": model,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+            "ANTHROPIC_SMALL_FAST_MODEL": model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_COST_WARNINGS": "1"}
+    return env
+
+
+def real_prompt_once(lane, key, model):
+    """(True, "") followed the prompt, (False, why) didn't, (None, why) learned nothing about the model."""
+    claude = find_claude()
+    nonce = "ZX" + secrets.token_hex(4)
+    with tempfile.TemporaryDirectory(prefix="lane-sync-") as home:
+        work = os.path.join(home, "work")
+        os.makedirs(work)
+        try:
+            with _real_claude_slots:
+                r = subprocess.run([claude, "-p", f"Reply with exactly this token and nothing else: {nonce}",
+                                    "--disallowedTools", BLOCKED_TOOLS],
+                                   cwd=work, env=isolated_env(lane, key, model, home), stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=180, check=False)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return None, f"claude run failed: {type(e).__name__}"
+    out = r.stdout + r.stderr
+    if nonce in r.stdout and r.returncode == 0:
+        return True, ""
+    api = API_ERROR.search(out)
+    if api and api.group(1) not in ("401", "402", "403", "429") and not api.group(1).startswith("5"):
+        return False, f"HTTP {api.group(1)} from Claude Code's real request"   # the wire is the bug here
+    if r.returncode != 0:
+        return None, "claude exited with an error" + (f" (HTTP {api.group(1)})" if api else "")
+    return False, "ignored the prompt"
+
+
+def real_prompt(lane, key, model, runs=REAL_PROMPT_RUNS):
+    """(verdict, note). A single miss is noted, not fatal: models are noisy, a pattern isn't."""
+    if not find_claude():
+        return "pass", "real prompt not run (no claude on PATH)"
+    misses, why = 0, set()
+    for _ in range(runs):
+        followed, reason = real_prompt_once(lane, key, model)
+        if followed is None:
+            return None, reason
+        if not followed:
+            misses += 1
+            why.add(reason)
+    if misses >= 2:
+        return "broken", f"{misses}/{runs} real prompts: " + "; ".join(sorted(why))
+    return "pass", f"real prompt {runs - misses}/{runs}"
+
+
 def _transient(status, raw):
     return status == 0 or status == 429 or status == 402 or status >= 500 or bool(BALANCE.search(raw))
 
@@ -398,7 +473,10 @@ def ladder(lane, key, model, budget=None, runs=3, guess=False):
             reasons.update(problems)
     if bad or silent >= 2:
         return "broken", f"{bad + silent}/{runs} " + "; ".join(sorted(reasons))[:100]
-    return "pass", f"single + multi-turn {runs - silent}/{runs}"
+    verdict, note = real_prompt(lane, key, model)
+    if verdict != "pass":
+        return verdict, note
+    return "pass", f"single + multi-turn {runs - silent}/{runs}, {note}"
 
 
 # ---- state -----------------------------------------------------------------------------------------
