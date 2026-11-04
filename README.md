@@ -96,6 +96,8 @@ or-models gemma-4 --use                     # search, pick, launch
 # Observability & routing
 llp-which                                   # intelligent provider recommendation
 llp-stats                                   # session dashboard (error rates, durations)
+lanes [lane] [grep]                         # live models per lane, tested for Claude Code; launches show what's new
+lanes accept <lane> <id>                    # move a lane's default to a verified id (lanes revert <lane> undoes it)
 llp-history                                 # raw session log (last 10)
 llp-quick                                   # launch best free model immediately
 llp-reset                                   # clear session log
