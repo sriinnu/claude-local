@@ -83,7 +83,7 @@ ALIASES = {"openrouter-free": "openrouter", "openrouter-paid": "openrouter", "or
            "fable": "openrouter", "glmflash": "openrouter", "qwenflash": "openrouter",
            "geminiflash": "openrouter", "musespark": "openrouter", "llp-quick": "openrouter",
            "kimi": "kimi-cn", "kimi-china": "kimi-cn", "vai": "vercel", "sf": "siliconflow",
-           "qwen-cc": "qwen", "qwen-ds": "qwen", "qwen-glm": "qwen", "qwen-plus": "qwen",
+           "qwen-cc": "qwen", "qwen-ds": "qwen", "qwen-glm": "qwen", "qwen-plus": "qwen", "qwen4": "qwen",
            "deepseekflash": "deepseek", "minimaxflash": "minimax"}
 
 # What we already measured by hand, so day one isn't blank. Dated, so they expire and get re-tested.

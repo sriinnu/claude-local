@@ -477,6 +477,7 @@ kimi-us() {
 # /model picker rows for the plan (schema read from claude 2.1.285: modelPicker.options
 # = [{model,label?,description?,behavesAs?}]). Added to the built-in lineup, not replacing it.
 _QWEN_PICKER_JSON='{"modelPicker":{"options":[
+{"model":"qwen4-max-preview","label":"Qwen4 Max (preview)","description":"1M ctx, retires 2026-11-25"},
 {"model":"qwen3.8-max","label":"Qwen 3.8 Max"},
 {"model":"qwen3.7-max","label":"Qwen 3.7 Max"},
 {"model":"qwen3.7-plus","label":"Qwen 3.7 Plus"},
@@ -522,6 +523,10 @@ qwen-video() { python3 "${_LCP_LIB_DIR}/qwen_media.py" video "$@"; }
 qwen-ds()   { _qwen_plan "deepseek-v4-pro" "deepseek-v4-pro" "deepseek-v4.1-flash" "$@"; }
 qwen-glm()  { _qwen_plan "glm-5.3" "glm-5.3" "glm-5.2" "$@"; }
 qwen-plus() { _qwen_plan "qwen3.7-plus" "qwen3.7-plus" "qwen3.8-flash" "$@"; }
+# Qwen4-Max preview (released 2026-11-11, Token Plan only, 1M ctx / 393k out). Smoke-tested
+# 2026-11-12: 200 on /v1/messages, clean streamed tool_use. Bare "qwen4-max" 400s ("Model not
+# exist"). Alibaba retires the preview on 2026-11-25 — after that swap to the GA id or delete this.
+qwen4() { CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 _qwen_plan "qwen4-max-preview" "qwen4-max-preview" "qwen3.8-flash" "$@"; }
 
 # OpenRouter - Claude via OpenRouter. Moved to the 5.5 family 2026-10-12 (all three on the OR
 # catalog): opus-5.5 $4/$20 (was opus-5 at $5/$25 — newer AND cheaper), sonnet-5.5 $2/$10,
@@ -552,8 +557,8 @@ fable() {
 # Vercel AI Gateway - Anthropic-native gateway to 280+ models across providers.
 # Slugs are creator/model (anthropic/claude-opus-5.5, openai/gpt-6.1-sol, google/gemini-...).
 # Browse live models + pricing with `vai-models`. Key: AI_GATEWAY_API_KEY in the login keychain.
-# ⚠ 2026-10-12: AI_GATEWAY_API_KEY is NOT in the login keychain — this lane launches with an empty
-# token until you add it (security add-generic-password -U -a "$USER" -s AI_GATEWAY_API_KEY -w).
+# 2026-11-12: AI_GATEWAY_API_KEY added to the login keychain (own key, separate from other tools);
+# smoke-tested 200 on /v1/messages. Rotate: security add-generic-password -U -a "$USER" -s AI_GATEWAY_API_KEY -w
 # Slugs moved to the 5.5 family the same day; the gateway's public /v1/models lists all three.
 vai() {
   _launch_claude \
@@ -1728,6 +1733,7 @@ lcp-help() {
     qwen-ds        Same plan: DeepSeek V4-Pro (opus/sonnet), V4.1 Flash (haiku)
     qwen-glm       Same plan: GLM 5.3 (opus/sonnet), GLM 5.2 (haiku)
     qwen-plus      Same plan: Qwen3.7 Plus (opus/sonnet), 3.8-flash (haiku)
+    qwen4          Same plan: Qwen4-Max preview (opus/sonnet, 1M ctx), 3.8-flash (haiku) — until 11-25
     openrouter     Claude Opus/Sonnet/Haiku 5.5 via OpenRouter
     fable          Claude Fable 5 — premium, 1M ctx, creative work
     vai            Vercel AI Gateway — 280+ models, any creator/model slug
